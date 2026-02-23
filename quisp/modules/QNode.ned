@@ -2,6 +2,7 @@ package modules;
 @namespace(quisp::modules);
 
 import modules.Application.Application;
+import modules.Application.QSDCApplication;
 import modules.QRSA.quantumRoutingSoft;
 import modules.QNIC.*;
 import modules.Common.*;
@@ -27,7 +28,7 @@ module QNode
         inout quantum_port_receiver_passive[] @loose; // BSA is passive. Doesnt do anything. EPPS is in charge here.
 
     submodules:
-        app: Application {
+        app: QSDCApplication {
             parameters:
                 @display("p=30,43");
         }
