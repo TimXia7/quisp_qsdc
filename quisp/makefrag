@@ -1,8 +1,8 @@
 QUISP_VERSION=0.3.0
 CXXFLAGS = -std=c++17
 
-OBJS := $(filter-out test_util/% %_test.o,$(OBJS))
-OBJS := $(filter-out %unit_test_main.o,$(OBJS))
+override OBJS := $(filter-out %/test_utils/% %/test_utils/%.o $(O)/test_utils/% $(O)/test_utils/%.o,$(OBJS))
+override OBJS := $(filter-out %_test.o %unit_test_main.o,$(OBJS))
 MSGC:=$(MSGC) --msg6
 
 # you can pass the file path you want to check as SRCS environment variable. see the example below.
