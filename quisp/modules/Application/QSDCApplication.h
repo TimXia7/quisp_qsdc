@@ -21,6 +21,7 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   void handleMessage(omnetpp::cMessage* msg) override;
 
   void startOnce();
+  void startQSDCProtocol(unsigned long ruleset_id);
 };
 
 Define_Module(QSDCApplication);

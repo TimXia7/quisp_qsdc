@@ -9,7 +9,7 @@ void QSDCApplication::initialize() {
   initializeLogger(provider);
 
   // only keep this module for EndNodes (same logic as Application.cc)
-  if (!gate("toRouter")->isConnected()) {
+  if (!gate("toRouter")->isConnected() || !gate("fromRouter")->isConnected()) {
     auto *msg = new DeleteThisModule("DeleteThisModule");
     scheduleAt(simTime(), msg);
     return;
@@ -25,6 +25,18 @@ void QSDCApplication::initialize() {
 }
 
 void QSDCApplication::handleMessage(cMessage* msg) {
+
+  // If we receive the setup response, QRSA still needs it.
+  if (auto *resp = dynamic_cast<ConnectionSetupResponse*>(msg)) {
+    EV_INFO << "[QSDC] ConnectionSetupResponse received (ruleset_id="
+            << resp->getRuleSet_id() << ")\n";
+
+    startQSDCProtocol(resp->getRuleSet_id());
+
+    delete resp;
+    return;
+  }
+
   if (dynamic_cast<DeleteThisModule*>(msg)) {
     delete msg;
     deleteModule();
@@ -37,9 +49,8 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     return;
   }
 
-  // pass-through like the original app (so QRSA works)
+  // pass-through for other QRSA-related messages
   if (dynamic_cast<ConnectionSetupRequest*>(msg) ||
-      dynamic_cast<ConnectionSetupResponse*>(msg) ||
       dynamic_cast<InternalRuleSetForwarding*>(msg)) {
     logger->logPacket("QSDCApplication::handleMessage", msg);
     send(msg, "toRouter");
@@ -76,6 +87,11 @@ void QSDCApplication::startOnce() {
           << my_address << " to " << bob_addr << "\n";
 
   send(pk, "toRouter");
+}
+
+void QSDCApplication::startQSDCProtocol(unsigned long ruleset_id) {
+  if (!is_initiator) return;
+  EV_INFO << "[QSDC] Starting QSDC operations (ruleset_id=" << ruleset_id << ")\n";
 }
 
 }  // namespace quisp::modules
