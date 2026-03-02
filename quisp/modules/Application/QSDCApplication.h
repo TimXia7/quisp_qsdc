@@ -5,6 +5,15 @@
 #include "modules/Logger/LoggerBase.h"
 #include "utils/ComponentProvider.h"
 
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+
+namespace omnetpp {
+class cMessage;
+class cModule;
+}  // namespace omnetpp
+
 namespace quisp::modules {
 
 class QSDCApplication : public IApplication, public Logger::LoggerBase {
@@ -17,11 +26,46 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   int my_address = -1;
   bool is_initiator = false;
 
+  unsigned long active_ruleset_id = 0;
+  bool sampling_started = false;
+
+  int min_pairs_to_start = 8;
+  int sample_target = 32;
+  int samples_done = 0;
+  int errors = 0;
+
+  bool expect_anti_correlation = false;
+
+  omnetpp::simtime_t start_delay = 0;
+  omnetpp::simtime_t poll_interval = 0;
+  omnetpp::simtime_t sample_interval = 0;
+
+  struct PendingCheck {
+    char basis;
+    int alice_result;
+  };
+
+  std::unordered_map<int, PendingCheck> pending_checks;
+  std::unordered_set<int> used_indices;  // indices already consumed by sampling
+
+  // OMNeT lifecycle
   void initialize() override;
   void handleMessage(omnetpp::cMessage* msg) override;
 
+  // Existing flow
   void startOnce();
   void startQSDCProtocol(unsigned long ruleset_id);
+
+  // helpers
+  void pollUntilEnoughPairs();
+  void doNextSample();
+
+  // Count "ready" pair slots and return their indices.
+  int countReadyPairsAndCollect(std::vector<int>& out_indices);
+
+  // Returns the local QNIC module that holds the stationary qubits we should sample.
+  // (For your observed two-node setup: Alice uses qnic_r[0], Bob uses qnic[0].)
+  omnetpp::cModule* getLocalEntangledQnic();
 };
 
 Define_Module(QSDCApplication);

@@ -8,6 +8,15 @@ simple QSDCApplication
     int number_of_bellpair;
     int bob_addr = default(1);
 
+    // Sampling controls (with defaults)
+    int min_pairs_to_start = default(8);
+    int sample_target = default(32);
+    bool expect_anti = default(false);
+
+    double start_delay @unit(s) = default(0s);
+    double poll_interval @unit(s) = default(0s);
+    double sample_interval @unit(s) = default(0s);
+
   gates:
     input fromRouter @loose;
     output toRouter @loose;
