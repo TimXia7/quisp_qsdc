@@ -116,7 +116,6 @@ void RuleEngine::handleMessage(cMessage *msg) {
       // If not, we emit photons on demand
     } else {
       if (number_of_free_emitters == 0) return;
-      EV << "[DBG] free_emitters=" << number_of_free_emitters << " type=" << type << " qnic_index=" << qnic_index << "\n";
       auto is_first = pk->isFirst();
       auto is_last = (number_of_free_emitters == 1);
       // need to set is_first to false
@@ -295,32 +294,24 @@ void RuleEngine::handleLinkGenerationResult(CombinedBSAresults *bsa_result) {
   auto qnic_index = bsa_result->getQnicIndex();
   auto num_success = bsa_result->getSuccessCount();
   auto partner_address = bsa_result->getNeighborAddress();
-
   auto &emitted_indices = emitted_photon_order_map[{type, qnic_index}];
-
-  // Choose one deterministic side to do the final "force" step.
-  const bool i_am_force_side = (parentAddress < partner_address);
-
   for (int i = num_success - 1; i >= 0; i--) {
     auto emitted_index = bsa_result->getSuccessfulPhotonIndices(i);
     auto qubit_index = emitted_indices[emitted_index];
     auto *qubit_record = qnic_store->getQubitRecord(type, qnic_index, qubit_index);
+    auto iterator = emitted_indices.begin();
+    std::advance(iterator, emitted_index);
+    bell_pair_store.insertEntangledQubit(partner_address, qubit_record);
+    emitted_indices.erase(iterator);
 
-    auto it = emitted_indices.begin();
-    std::advance(it, emitted_index);
-    emitted_indices.erase(it);
-
-    // For now, rig the generated bell pair to always be in form phi, matching in the Z basis
-    auto corr = bsa_result->getCorrectionOperationList(i);
-    if (corr == PauliOperator::X) realtime_controller->applyXGate(qubit_record);
-    else if (corr == PauliOperator::Z) realtime_controller->applyZGate(qubit_record);
-    else if (corr == PauliOperator::Y) realtime_controller->applyYGate(qubit_record);
-
-    if (i_am_force_side) {
+    auto correction_operation = bsa_result->getCorrectionOperationList(i);
+    if (correction_operation == PauliOperator::X) {
+      realtime_controller->applyXGate(qubit_record);
+    } else if (correction_operation == PauliOperator::Z) {
+      realtime_controller->applyZGate(qubit_record);
+    } else if (correction_operation == PauliOperator::Y) {
       realtime_controller->applyYGate(qubit_record);
     }
-
-    bell_pair_store.insertEntangledQubit(partner_address, qubit_record);
   }
 }
 
