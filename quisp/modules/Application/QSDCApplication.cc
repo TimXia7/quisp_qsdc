@@ -47,6 +47,11 @@ static const char* SELF_NEXT_SAMPLE = "NEXT_SAMPLE";
 static const char* ENT_REQ = "ENTCHECK_REQ";
 static const char* ENT_RESP = "ENTCHECK_RESP";
 
+// Dense coding message names
+static const char* SELF_START_MESSAGE = "START_MESSAGE";
+static const char* DENSE_REQ = "DENSE_REQ";
+static const char* DENSE_DONE = "DENSE_DONE";
+
 // Convert eigenvalue result to +/-1
 // simplifies vector calculations of qubits
 static inline int eigenToInt(quisp::types::EigenvalueResult r) {
@@ -168,6 +173,12 @@ void QSDCApplication::doNextSample() {
          << " errors=" << errors
          << " error_rate=" << err_rate);
 
+    if (err_rate <= par("max_error_rate").doubleValue()) {
+      QLOG("[QSDC] Channel accepted; starting dense-coded message transmission.");
+      scheduleAt(simTime() + sample_interval, new cMessage(SELF_START_MESSAGE));
+    } else {
+      QLOG("[QSDC] Channel rejected; dense-coded transmission aborted.");
+    }
     return;
   }
 
@@ -254,6 +265,11 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       startOnce();
       return;
     }
+    if (strcmp(msg->getName(), SELF_START_MESSAGE) == 0) {
+      delete msg;
+      startDenseTransmission();
+      return;
+    }
     if (strcmp(msg->getName(), SELF_WAIT_FOR_PAIRS) == 0) {
       delete msg;
       pollUntilEnoughPairs();
@@ -264,6 +280,95 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       doNextSample();
       return;
     }
+  }
+
+  if (strcmp(msg->getName(), DENSE_REQ) == 0) {
+    const int src_addr = (int)msg->par("src_addr").longValue();
+    const int qi = (int)msg->par("qubit_index").longValue();
+
+    auto* qnic = getLocalEntangledQnic();
+    if (!qnic) {
+      QLOG("[QSDC] DENSE_REQ: no qnic found on Bob");
+      delete msg;
+      return;
+    }
+
+    auto* bob_mod = qnic->getSubmodule("statQubit", qi);
+    if (!bob_mod) {
+      QLOG("[QSDC] DENSE_REQ: Bob statQubit[" << qi << "] missing");
+      delete msg;
+      return;
+    }
+
+    auto* bob_qubit = check_and_cast<quisp::modules::StationaryQubit*>(bob_mod);
+
+    // In this simulator version, use the corresponding qubit slot on Alice's side for now
+    auto* network = getSimulation()->getSystemModule();
+    auto* alice_qnode = network->getSubmodule("alice");
+    cModule* alice_qnic = nullptr;
+
+    if (auto* m = alice_qnode->getSubmodule("qnic_r", 0)) alice_qnic = m;
+    else if (auto* m = alice_qnode->getSubmodule("qnic", 0)) alice_qnic = m;
+
+    if (!alice_qnic) {
+      QLOG("[QSDC] DENSE_REQ: Alice qnic not found");
+      delete msg;
+      return;
+    }
+
+    auto* alice_mod = alice_qnic->getSubmodule("statQubit", qi);
+    if (!alice_mod) {
+      QLOG("[QSDC] DENSE_REQ: Alice statQubit[" << qi << "] missing");
+      delete msg;
+      return;
+    }
+
+    auto* alice_qubit = check_and_cast<quisp::modules::StationaryQubit*>(alice_mod);
+
+    std::string decoded_bits = decodeDensePair(bob_qubit, alice_qubit);
+
+    QLOG("[QSDC] DENSE_REQ decoded at Bob: qi=" << qi
+         << " bits=" << decoded_bits);
+
+    auto* done = new Header(DENSE_DONE);
+    done->setSrcAddr(my_address);
+    done->setDestAddr(src_addr);
+    done->setKind(1);
+
+    done->addPar("qubit_index") = qi;
+    done->addPar("decoded_bits") = decoded_bits.c_str();
+
+    send(done, "toRouter");
+
+    delete msg;
+    return;
+  }
+
+  if (strcmp(msg->getName(), DENSE_DONE) == 0) {
+    const int qi = (int)msg->par("qubit_index").longValue();
+    const std::string bits = msg->par("decoded_bits").stringValue();
+
+    bob_decoded_symbols.push_back(bits);
+
+    QLOG("[QSDC] DENSE_DONE: qi=" << qi << " decoded_bits=" << bits);
+
+    if (bob_decoded_symbols.size() == payload_bit_pairs.size()) {
+      std::string decoded_bits;
+      for (const auto& s : bob_decoded_symbols) decoded_bits += s;
+
+      std::string decoded_text;
+      for (size_t i = 0; i + 7 < decoded_bits.size(); i += 8) {
+        std::string byte = decoded_bits.substr(i, 8);
+        char ch = (char)std::stoi(byte, nullptr, 2);
+        decoded_text.push_back(ch);
+      }
+
+      QLOG("[QSDC] Dense decoded bits=" << decoded_bits);
+      QLOG("[QSDC] Dense decoded text=\"" << decoded_text << "\"");
+    }
+
+    delete msg;
+    return;
   }
 
   // Bob's messages side: receives ENTCHECK_REQ
@@ -420,6 +525,125 @@ void QSDCApplication::startQSDCProtocol(unsigned long ruleset_id) {
        << ", waiting for >= " << min_pairs_to_start << " ready pairs.");
 
   scheduleAt(simTime() + start_delay, new cMessage(SELF_WAIT_FOR_PAIRS));
+}
+
+void QSDCApplication::applyDenseEncoding(quisp::modules::StationaryQubit* qubit, const std::string& bits) {
+  // Dense coding map for initial phi+:
+  // 00 -> I
+  // 01 -> X
+  // 10 -> Z
+  // 11 -> X then Z
+  if (bits == "00") {
+    return;
+  } else if (bits == "01") {
+    qubit->gateX();
+  } else if (bits == "10") {
+    qubit->gateZ();
+  } else if (bits == "11") {
+    qubit->gateX();
+    qubit->gateZ();
+  } else {
+    throw cRuntimeError("applyDenseEncoding: invalid 2-bit symbol '%s'", bits.c_str());
+  }
+}
+
+std::string QSDCApplication::decodeDensePair(
+    quisp::modules::StationaryQubit* local_qubit,
+    quisp::modules::StationaryQubit* remote_qubit) {
+  // Bell decode:
+  // CNOT(remote, local), then H(remote), then measure both in Z.
+  //
+  // Here "remote_qubit" means Alice's half of the pair,
+  // and "local_qubit" means Bob's half.
+
+  remote_qubit->gateCNOT(local_qubit);
+  remote_qubit->gateHadamard();
+
+  int first = eigenToInt(remote_qubit->measureZ());
+  int second = eigenToInt(local_qubit->measureZ());
+
+  auto bit = [](int x) { return (x == +1) ? '0' : '1'; };
+
+  std::string out;
+  out.push_back(bit(first));
+  out.push_back(bit(second));
+  return out;
+}
+
+void QSDCApplication::startDenseTransmission() {
+  payload_message_text = std::string(par("payload").stringValue());
+
+  std::string message_bits;
+  for (unsigned char ch : payload_message_text) {
+    for (int b = 7; b >= 0; --b) {
+      message_bits.push_back(((ch >> b) & 1) ? '1' : '0');
+    }
+  }
+
+  payload_bit_pairs.clear();
+  for (size_t i = 0; i < message_bits.size(); i += 2) {
+    std::string two = message_bits.substr(i, 2);
+    if (two.size() == 1) two.push_back('0');
+    payload_bit_pairs.push_back(two);
+  }
+
+  std::vector<int> ready;
+  countReadyPairsAndCollect(ready);
+
+  payload_indices.clear();
+  for (int qi : ready) {
+    if (used_indices.find(qi) == used_indices.end()) {
+      payload_indices.push_back(qi);
+    }
+  }
+
+  if ((int)payload_bit_pairs.size() > (int)payload_indices.size()) {
+    QLOG("[QSDC] ERROR: not enough remaining Bell pairs for payload.");
+    return;
+  }
+
+  QLOG("[QSDC] Dense message text=\"" << payload_message_text << "\"");
+  QLOG("[QSDC] Dense message bits=" << message_bits);
+  QLOG("[QSDC] Remaining Bell pairs=" << payload_indices.size()
+       << " pairs_needed=" << payload_bit_pairs.size());
+
+  auto* qnic = getLocalEntangledQnic();
+  if (!qnic) {
+    QLOG("[QSDC] ERROR: no local qnic for dense transmission.");
+    return;
+  }
+
+  const int bob_addr = par("bob_addr").intValue();
+
+  for (size_t k = 0; k < payload_bit_pairs.size(); ++k) {
+    int qi = payload_indices[k];
+    const std::string& bits = payload_bit_pairs[k];
+
+    auto* sq_mod = qnic->getSubmodule("statQubit", qi);
+    if (!sq_mod) {
+      QLOG("[QSDC] ERROR: dense statQubit[" << qi << "] missing on Alice.");
+      continue;
+    }
+
+    auto* qubit = check_and_cast<quisp::modules::StationaryQubit*>(sq_mod);
+
+    applyDenseEncoding(qubit, bits);
+    used_indices.insert(qi);
+
+    QLOG("[QSDC] Dense encode: qi=" << qi << " bits=" << bits);
+
+    auto* req = new Header(DENSE_REQ);
+    req->setSrcAddr(my_address);
+    req->setDestAddr(bob_addr);
+    req->setKind(1);
+
+    req->addPar("src_addr") = my_address;
+    req->addPar("qubit_index") = qi;
+
+    send(req, "toRouter");
+
+    QLOG("[QSDC] Dense send: qi=" << qi);
+  }
 }
 
 }  // namespace quisp::modules
