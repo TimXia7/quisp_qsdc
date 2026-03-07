@@ -183,10 +183,7 @@ void QSDCApplication::doNextSample() {
   const int qi = ready.back();
 
   // Random basis selection (X or Z)
-  // const char basis = (dblrand() < 0.5) ? 'Z' : 'X';
-
-  // For now, just stick to Z for a proof of concept
-  const char basis = 'Z';
+  const char basis = (dblrand() < 0.5) ? 'Z' : 'X';
 
   auto* qnic = getLocalEntangledQnic();
   if (!qnic) {
