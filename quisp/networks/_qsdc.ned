@@ -34,4 +34,16 @@ network qsdc_network
     connections:
         alice.port++ <--> ClassicalChannel { distance = 1km; } <--> bob.port++;
         alice.quantum_port_receiver++ <--> QuantumChannel { distance = 1km; } <--> bob.quantum_port++;
-}
+
+        alice.appQuantumOut --> QuantumChannel {
+            distance = 1km;
+            channel_loss_rate = 0;
+            channel_x_error_rate = 0;
+            channel_y_error_rate = 0;
+            channel_z_error_rate = 0;
+        } --> bob.appQuantumIn;
+    }
+
+
+
+

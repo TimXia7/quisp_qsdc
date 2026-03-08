@@ -5,6 +5,9 @@
 #include "modules/Logger/LoggerBase.h"
 #include "utils/ComponentProvider.h"
 
+#include "PhotonicQubit_m.h"
+#include "backends/interfaces/IQubit.h"
+
 #include <unordered_map>
 #include <unordered_set>
 #include <set>
@@ -18,6 +21,9 @@ class cModule;
 }  // namespace omnetpp
 
 namespace quisp::modules {
+
+// Forward mentioned instead of include, not all files required
+class StationaryQubit;
 
 class QSDCApplication : public IApplication, public Logger::LoggerBase {
  public:
@@ -73,16 +79,16 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   void applyDenseEncoding(quisp::modules::StationaryQubit* qubit, const std::string& bits);
   std::string decodeDensePair(
     quisp::modules::StationaryQubit* local_qubit,
-    quisp::modules::StationaryQubit* remote_qubit);
+    backends::IQubit* remote_qubit);
   void startDenseTransmission();
+
+  void sendDensePhoton(int qi, quisp::modules::StationaryQubit* encoded_qubit);
 
   std::vector<int> payload_indices;
   std::vector<std::string> payload_bit_pairs;
   std::vector<std::string> bob_decoded_symbols;
   std::string payload_message_text;
 };
-
-Define_Module(QSDCApplication);
 
 }  // namespace quisp::modules
 

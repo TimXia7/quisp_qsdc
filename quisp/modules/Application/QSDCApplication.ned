@@ -23,4 +23,7 @@ simple QSDCApplication
   gates:
     input fromRouter @loose;
     output toRouter @loose;
+
+    input fromQuantum @loose;
+    output toQuantum @loose;
 }

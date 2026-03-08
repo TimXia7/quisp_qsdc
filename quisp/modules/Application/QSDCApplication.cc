@@ -16,6 +16,8 @@ using namespace quisp::messages;
 
 namespace quisp::modules {
 
+Define_Module(QSDCApplication);
+
   // separate namespace to isolate logging
 namespace {
 // Logging to qsdc_app.log
@@ -49,7 +51,6 @@ static const char* ENT_RESP = "ENTCHECK_RESP";
 
 // Dense coding message names
 static const char* SELF_START_MESSAGE = "START_MESSAGE";
-static const char* DENSE_REQ = "DENSE_REQ";
 static const char* DENSE_DONE = "DENSE_DONE";
 
 // Convert eigenvalue result to +/-1
@@ -258,6 +259,66 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     return;
   }
 
+  if (auto* photon = dynamic_cast<quisp::messages::PhotonicQubit*>(msg)) {
+    if (strcmp(photon->getMessage_type(), "dense_payload") == 0) {
+      const int qi = (int) photon->par("qubit_index").longValue();
+      const int src_addr = (int) photon->par("src_addr").longValue();
+
+      if (photon->isLost()) {
+        QLOG("[QSDC] Dense photon lost in channel: qi=" << qi);
+
+        auto* done = new Header(DENSE_DONE);
+        done->setSrcAddr(my_address);
+        done->setDestAddr(src_addr);
+        done->setKind(1);
+        done->addPar("qubit_index") = qi;
+        done->addPar("decoded_bits") = "LOST";
+
+        send(done, "toRouter");
+        delete photon;
+        return;
+      }
+
+      auto* qnic = getLocalEntangledQnic();
+      if (!qnic) {
+        QLOG("[QSDC] Dense photon arrived, but no qnic found on Bob");
+        delete photon;
+        return;
+      }
+
+      auto* bob_mod = qnic->getSubmodule("statQubit", qi);
+      if (!bob_mod) {
+        QLOG("[QSDC] Dense photon arrived, but Bob statQubit[" << qi << "] missing");
+        delete photon;
+        return;
+      }
+
+      auto* bob_qubit = check_and_cast<quisp::modules::StationaryQubit*>(bob_mod);
+
+      auto* flying_qubit =
+          const_cast<backends::IQubit*>(photon->getQubitRef());
+
+      std::string decoded_bits = decodeDensePair(bob_qubit, flying_qubit);
+
+      QLOG("[QSDC] Dense photon decoded at Bob: qi=" << qi
+           << " bits=" << decoded_bits
+           << " xErr=" << photon->hasXError()
+           << " zErr=" << photon->hasZError());
+
+      auto* done = new Header(DENSE_DONE);
+      done->setSrcAddr(my_address);
+      done->setDestAddr(src_addr);
+      done->setKind(1);
+      done->addPar("qubit_index") = qi;
+      done->addPar("decoded_bits") = decoded_bits.c_str();
+
+      send(done, "toRouter");
+
+      delete photon;
+      return;
+    }
+  }
+
   // Handle self messages
   if (msg->isSelfMessage()) {
     if (strcmp(msg->getName(), SELF_START_ONCE) == 0) {
@@ -282,73 +343,16 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     }
   }
 
-  if (strcmp(msg->getName(), DENSE_REQ) == 0) {
-    const int src_addr = (int)msg->par("src_addr").longValue();
-    const int qi = (int)msg->par("qubit_index").longValue();
-
-    auto* qnic = getLocalEntangledQnic();
-    if (!qnic) {
-      QLOG("[QSDC] DENSE_REQ: no qnic found on Bob");
-      delete msg;
-      return;
-    }
-
-    auto* bob_mod = qnic->getSubmodule("statQubit", qi);
-    if (!bob_mod) {
-      QLOG("[QSDC] DENSE_REQ: Bob statQubit[" << qi << "] missing");
-      delete msg;
-      return;
-    }
-
-    auto* bob_qubit = check_and_cast<quisp::modules::StationaryQubit*>(bob_mod);
-
-    // In this simulator version, use the corresponding qubit slot on Alice's side for now
-    auto* network = getSimulation()->getSystemModule();
-    auto* alice_qnode = network->getSubmodule("alice");
-    cModule* alice_qnic = nullptr;
-
-    if (auto* m = alice_qnode->getSubmodule("qnic_r", 0)) alice_qnic = m;
-    else if (auto* m = alice_qnode->getSubmodule("qnic", 0)) alice_qnic = m;
-
-    if (!alice_qnic) {
-      QLOG("[QSDC] DENSE_REQ: Alice qnic not found");
-      delete msg;
-      return;
-    }
-
-    auto* alice_mod = alice_qnic->getSubmodule("statQubit", qi);
-    if (!alice_mod) {
-      QLOG("[QSDC] DENSE_REQ: Alice statQubit[" << qi << "] missing");
-      delete msg;
-      return;
-    }
-
-    auto* alice_qubit = check_and_cast<quisp::modules::StationaryQubit*>(alice_mod);
-
-    std::string decoded_bits = decodeDensePair(bob_qubit, alice_qubit);
-
-    QLOG("[QSDC] DENSE_REQ decoded at Bob: qi=" << qi
-         << " bits=" << decoded_bits);
-
-    auto* done = new Header(DENSE_DONE);
-    done->setSrcAddr(my_address);
-    done->setDestAddr(src_addr);
-    done->setKind(1);
-
-    done->addPar("qubit_index") = qi;
-    done->addPar("decoded_bits") = decoded_bits.c_str();
-
-    send(done, "toRouter");
-
-    delete msg;
-    return;
-  }
-
   if (strcmp(msg->getName(), DENSE_DONE) == 0) {
     const int qi = (int)msg->par("qubit_index").longValue();
     const std::string bits = msg->par("decoded_bits").stringValue();
 
-    bob_decoded_symbols.push_back(bits);
+    if (bits == "LOST") {
+      QLOG("[QSDC] DENSE_DONE: qi=" << qi << " lost in channel");
+      bob_decoded_symbols.push_back("??");
+    } else {
+      bob_decoded_symbols.push_back(bits);
+    }
 
     QLOG("[QSDC] DENSE_DONE: qi=" << qi << " decoded_bits=" << bits);
 
@@ -547,17 +551,9 @@ void QSDCApplication::applyDenseEncoding(quisp::modules::StationaryQubit* qubit,
   }
 }
 
-std::string QSDCApplication::decodeDensePair(
-    quisp::modules::StationaryQubit* local_qubit,
-    quisp::modules::StationaryQubit* remote_qubit) {
-  // Bell decode:
-  // CNOT(remote, local), then H(remote), then measure both in Z.
-  //
-  // Here "remote_qubit" means Alice's half of the pair,
-  // and "local_qubit" means Bob's half.
-
-  remote_qubit->gateCNOT(local_qubit);
-  remote_qubit->gateHadamard();
+std::string QSDCApplication::decodeDensePair(quisp::modules::StationaryQubit* local_qubit, backends::IQubit* remote_qubit) {
+  remote_qubit->gateCNOT(local_qubit->getBackendQubitRef());
+  remote_qubit->gateH();
 
   int first = eigenToInt(remote_qubit->measureZ());
   int second = eigenToInt(local_qubit->measureZ());
@@ -571,6 +567,10 @@ std::string QSDCApplication::decodeDensePair(
 }
 
 void QSDCApplication::startDenseTransmission() {
+  bob_decoded_symbols.clear();
+  payload_indices.clear();
+  payload_bit_pairs.clear();
+
   payload_message_text = std::string(par("payload").stringValue());
 
   std::string message_bits;
@@ -580,7 +580,6 @@ void QSDCApplication::startDenseTransmission() {
     }
   }
 
-  payload_bit_pairs.clear();
   for (size_t i = 0; i < message_bits.size(); i += 2) {
     std::string two = message_bits.substr(i, 2);
     if (two.size() == 1) two.push_back('0');
@@ -590,7 +589,6 @@ void QSDCApplication::startDenseTransmission() {
   std::vector<int> ready;
   countReadyPairsAndCollect(ready);
 
-  payload_indices.clear();
   for (int qi : ready) {
     if (used_indices.find(qi) == used_indices.end()) {
       payload_indices.push_back(qi);
@@ -613,8 +611,6 @@ void QSDCApplication::startDenseTransmission() {
     return;
   }
 
-  const int bob_addr = par("bob_addr").intValue();
-
   for (size_t k = 0; k < payload_bit_pairs.size(); ++k) {
     int qi = payload_indices[k];
     const std::string& bits = payload_bit_pairs[k];
@@ -632,18 +628,24 @@ void QSDCApplication::startDenseTransmission() {
 
     QLOG("[QSDC] Dense encode: qi=" << qi << " bits=" << bits);
 
-    auto* req = new Header(DENSE_REQ);
-    req->setSrcAddr(my_address);
-    req->setDestAddr(bob_addr);
-    req->setKind(1);
-
-    req->addPar("src_addr") = my_address;
-    req->addPar("qubit_index") = qi;
-
-    send(req, "toRouter");
-
-    QLOG("[QSDC] Dense send: qi=" << qi);
+    sendDensePhoton(qi, qubit);
+    QLOG("[QSDC] Dense send via quantum channel: qi=" << qi);
   }
+}
+
+void QSDCApplication::sendDensePhoton(int qi, quisp::modules::StationaryQubit* encoded_qubit) {
+  auto* photon = new quisp::messages::PhotonicQubit("DENSE_PHOTON");
+  photon->setMessage_type("dense_payload");
+
+  // Carry the encoded qubit through the channel
+  photon->setQubitRef(encoded_qubit->getBackendQubitRef());
+
+  photon->addPar("src_addr") = my_address;
+  photon->addPar("qubit_index") = qi;
+
+  send(photon, "toQuantum");
+
+  QLOG("[QSDC] Dense photon sent through quantum channel: qi=" << qi);
 }
 
 }  // namespace quisp::modules
