@@ -585,7 +585,7 @@ void QSDCApplication::startDenseTransmission() {
   }
 }
 
-// (part of step 7) Alice uses this to encode a message into bell pairs
+// (part of step 7) Alice uses this to encode her qubit into bell pair, which is sent to Bob
 void QSDCApplication::applyDenseEncoding(quisp::modules::StationaryQubit* qubit, const std::string& bits) {
   // Dense coding map for initial phi+:
   // 00 -> I
