@@ -61,28 +61,25 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   void initialize() override;
   void handleMessage(omnetpp::cMessage* msg) override;
 
-  // Existing flow
+  // QSDC Flow Functions (roughly in order):
   void startOnce();
   void startQSDCProtocol(unsigned long ruleset_id);
-
-  // helpers
   void pollUntilEnoughPairs();
-  void doNextSample();
 
   // Count "ready" pair slots and return their indices.
   int countReadyPairsAndCollect(std::vector<int>& out_indices);
+  void doNextSample();
 
-  // Returns the local QNIC module that holds the stationary qubits we should sample.
-  // (For your observed two-node setup: Alice uses qnic_r[0], Bob uses qnic[0].)
-  omnetpp::cModule* getLocalEntangledQnic();
-
+  // Dense encoding, sending the message through the quantum channel
+  void startDenseTransmission();
   void applyDenseEncoding(quisp::modules::StationaryQubit* qubit, const std::string& bits);
+  void sendDensePhoton(int qi, quisp::modules::StationaryQubit* encoded_qubit);
   std::string decodeDensePair(
     quisp::modules::StationaryQubit* local_qubit,
     backends::IQubit* remote_qubit);
-  void startDenseTransmission();
 
-  void sendDensePhoton(int qi, quisp::modules::StationaryQubit* encoded_qubit);
+  // helper:
+  omnetpp::cModule* getLocalEntangledQnic();
 
   std::vector<int> payload_indices;
   std::vector<std::string> payload_bit_pairs;

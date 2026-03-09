@@ -18,7 +18,7 @@ namespace quisp::modules {
 
 Define_Module(QSDCApplication);
 
-  // separate namespace to isolate logging
+// separate namespace to isolate logging with macro: QLOG("<log message>");
 namespace {
 // Logging to qsdc_app.log
 inline void qsdc_log(const std::string& msg) {
@@ -40,7 +40,7 @@ inline void qsdc_log(const std::string& msg) {
 
 }  // namespace
 
-// const chars that determine simulation settings
+// const chars (essentially ENUMS) that determine simulation settings:
 static const char* SELF_START_ONCE = "START_ONCE";
 static const char* SELF_WAIT_FOR_PAIRS = "WAIT_FOR_PAIRS";
 static const char* SELF_NEXT_SAMPLE = "NEXT_SAMPLE";
@@ -59,7 +59,7 @@ static inline int eigenToInt(quisp::types::EigenvalueResult r) {
   return (r == quisp::types::EigenvalueResult::PLUS_ONE) ? +1 : -1;
 }
 
-// runs on program startup:
+// Step 1: on program startup, initializes system
 void QSDCApplication::initialize() {
   initializeLogger(provider);
 
@@ -95,25 +95,71 @@ void QSDCApplication::initialize() {
   }
 }
 
-// Logic to retrieve bell pairs
-omnetpp::cModule* QSDCApplication::getLocalEntangledQnic() {
-  auto* qnode = provider.getQNode();
-  if (!qnode) return nullptr;
+// Step 2: Initialize schedules SELF_START_ONCE in handleMessage, which schedules startOnce.
+// This completes the startup process
+void QSDCApplication::startOnce() {
+  const int bob_addr = par("bob_addr").intValue();
+  const int n_pairs = par("number_of_bellpair").intValue();
 
-  // Reading bell pairs
-  if (is_initiator) {
-    if (auto* m = qnode->getSubmodule("qnic_r", 0)) return m;
-  } else {
-    if (auto* m = qnode->getSubmodule("qnic", 0)) return m;
-  }
+  auto* pk = new ConnectionSetupRequest("ConnSetupRequest");
+  pk->setApplicationId(0);
 
-  // Fallbacks
-  if (auto* m = qnode->getSubmodule("qnic_r", 0)) return m;
-  if (auto* m = qnode->getSubmodule("qnic", 0)) return m;
-  return nullptr;
+  pk->setActual_srcAddr(my_address);
+  pk->setActual_destAddr(bob_addr);
+
+  // routing headers
+  pk->setSrcAddr(my_address);
+  pk->setDestAddr(my_address);
+
+  pk->setNumber_of_required_Bellpairs(n_pairs);
+  pk->setNum_measure(0);
+  pk->setKind(7);
+
+  QLOG("[QSDC] Requesting " << n_pairs << " stored Bell pairs from "
+       << my_address << " to " << bob_addr);
+
+  send(pk, "toRouter");
 }
 
-// Calculate the amount of available bell pairs
+// Step 3: preliminary settings for the actual protocol starting.
+// Once a delay is over, the polling starts to check if there are enough pairs to start QSDC
+// When there is, bell pair sampling starts
+void QSDCApplication::startQSDCProtocol(unsigned long ruleset_id) {
+  if (!is_initiator) return;
+
+  active_ruleset_id = ruleset_id;
+
+  // Reset sampling stats
+  samples_done = 0;
+  errors = 0;
+  sampling_started = false;
+  used_indices.clear();
+  pending_checks.clear();
+
+  QLOG("[QSDC] Starting sampling after delay=" << start_delay
+       << ", waiting for >= " << min_pairs_to_start << " ready pairs.");
+
+  scheduleAt(simTime() + start_delay, new cMessage(SELF_WAIT_FOR_PAIRS));
+}
+
+// Step 4: keep polling after the initial wait until there are enough pairs to initiate the process
+// the number of pairs is defined with "min_pairs_to_start", defined in ini
+void QSDCApplication::pollUntilEnoughPairs() {
+  if (!is_initiator) return;
+
+  std::vector<int> ready;
+  const int n_ready = countReadyPairsAndCollect(ready);
+  QLOG("[QSDC] Ready slots=" << n_ready << " (need >= " << min_pairs_to_start << ")");
+
+  if (n_ready >= min_pairs_to_start) {
+    sampling_started = true;
+    scheduleAt(simTime(), new cMessage(SELF_NEXT_SAMPLE));
+  } else {
+    scheduleAt(simTime() + poll_interval, new cMessage(SELF_WAIT_FOR_PAIRS));
+  }
+}
+
+// (part of step 4) Calculate the amount of available bell pairs
 int QSDCApplication::countReadyPairsAndCollect(std::vector<int>& out_indices) {
   out_indices.clear();
 
@@ -140,23 +186,7 @@ int QSDCApplication::countReadyPairsAndCollect(std::vector<int>& out_indices) {
   return (int)out_indices.size();
 }
 
-// keep polling after the initial wait until there are enough pairs to initiate the process
-// the number of pairs is defined with "min_pairs_to_start", defined in ini
-void QSDCApplication::pollUntilEnoughPairs() {
-  if (!is_initiator) return;
-
-  std::vector<int> ready;
-  const int n_ready = countReadyPairsAndCollect(ready);
-  QLOG("[QSDC] Ready slots=" << n_ready << " (need >= " << min_pairs_to_start << ")");
-
-  if (n_ready >= min_pairs_to_start) {
-    sampling_started = true;
-    scheduleAt(simTime(), new cMessage(SELF_NEXT_SAMPLE));
-  } else {
-    scheduleAt(simTime() + poll_interval, new cMessage(SELF_WAIT_FOR_PAIRS));
-  }
-}
-
+// Step 5: Sampling fully begins; it loops to keep sampling until all samples are finished (samples_done >= sample_target)
 // When sampling is allowed to start, it picks an available bellpair and measure's Alice's qubit
 // in a specific basis, and which pair Bob should measure in response.
 // After Bob does this, Alice continues to the next
@@ -243,15 +273,6 @@ void QSDCApplication::doNextSample() {
 // Message handling logic for the app. Should be broken down in the final version
 // Handles the setup response, Bob handling ENT_REQ, Alice handling ENT_RESP elc.
 void QSDCApplication::handleMessage(cMessage* msg) {
-  // QRSA setup response:
-  if (auto* resp = dynamic_cast<ConnectionSetupResponse*>(msg)) {
-    QLOG("[QSDC] ConnectionSetupResponse received (ruleset_id=" << resp->getRuleSet_id() << ")");
-
-    startQSDCProtocol(resp->getRuleSet_id());
-    delete resp;
-    return;
-  }
-
   // module deletion
   if (dynamic_cast<DeleteThisModule*>(msg)) {
     delete msg;
@@ -319,6 +340,15 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     }
   }
 
+  // QRSA setup response (from step 3):
+  if (auto* resp = dynamic_cast<ConnectionSetupResponse*>(msg)) {
+    QLOG("[QSDC] ConnectionSetupResponse received (ruleset_id=" << resp->getRuleSet_id() << ")");
+
+    startQSDCProtocol(resp->getRuleSet_id());
+    delete resp;
+    return;
+  }
+
   // Handle self messages
   if (msg->isSelfMessage()) {
     if (strcmp(msg->getName(), SELF_START_ONCE) == 0) {
@@ -343,6 +373,8 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     }
   }
 
+  // Step 8: Alice gets DENSE_DONE, which means the dense decoding process is done.
+  // reconstruct the text into readable text
   if (strcmp(msg->getName(), DENSE_DONE) == 0) {
     const int qi = (int)msg->par("qubit_index").longValue();
     const std::string bits = msg->par("decoded_bits").stringValue();
@@ -375,7 +407,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     return;
   }
 
-  // Bob's messages side: receives ENTCHECK_REQ
+  // (part of step 6) Bob's messages side: receives ENTCHECK_REQ, the samples from Alice
   if (strcmp(msg->getName(), ENT_REQ) == 0) {
     const int src_addr = (int)msg->par("src_addr").longValue();
     const int qi = (int)msg->par("qubit_index").longValue();
@@ -430,7 +462,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     return;
   }
 
-  // Alice's messages : receives ENTCHECK_RESP
+  // (part of step 6) Alice's messages side: receives ENT_RESP, the sample response from Bob
   if (strcmp(msg->getName(), ENT_RESP) == 0) {
     const int qi = (int)msg->par("qubit_index").longValue();
     const char basis = msg->par("basis").stringValue()[0];
@@ -485,87 +517,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
   error("QSDCApplication: unknown message");
 }
 
-// Startup the process
-// This may change if I choose to have the simulation run constantly, like a real network
-void QSDCApplication::startOnce() {
-  const int bob_addr = par("bob_addr").intValue();
-  const int n_pairs = par("number_of_bellpair").intValue();
-
-  auto* pk = new ConnectionSetupRequest("ConnSetupRequest");
-  pk->setApplicationId(0);
-
-  pk->setActual_srcAddr(my_address);
-  pk->setActual_destAddr(bob_addr);
-
-  // routing headers
-  pk->setSrcAddr(my_address);
-  pk->setDestAddr(my_address);
-
-  pk->setNumber_of_required_Bellpairs(n_pairs);
-  pk->setNum_measure(0);
-  pk->setKind(7);
-
-  QLOG("[QSDC] Requesting " << n_pairs << " stored Bell pairs from "
-       << my_address << " to " << bob_addr);
-
-  send(pk, "toRouter");
-}
-
-// preliminary settings for the protocol starting.
-// Once the delay is over, the polling starts to check if there are enough pairs to start QSDC
-void QSDCApplication::startQSDCProtocol(unsigned long ruleset_id) {
-  if (!is_initiator) return;
-
-  active_ruleset_id = ruleset_id;
-
-  // Reset sampling stats
-  samples_done = 0;
-  errors = 0;
-  sampling_started = false;
-  used_indices.clear();
-  pending_checks.clear();
-
-  QLOG("[QSDC] Starting sampling after delay=" << start_delay
-       << ", waiting for >= " << min_pairs_to_start << " ready pairs.");
-
-  scheduleAt(simTime() + start_delay, new cMessage(SELF_WAIT_FOR_PAIRS));
-}
-
-void QSDCApplication::applyDenseEncoding(quisp::modules::StationaryQubit* qubit, const std::string& bits) {
-  // Dense coding map for initial phi+:
-  // 00 -> I
-  // 01 -> X
-  // 10 -> Z
-  // 11 -> X then Z
-  if (bits == "00") {
-    return;
-  } else if (bits == "01") {
-    qubit->gateX();
-  } else if (bits == "10") {
-    qubit->gateZ();
-  } else if (bits == "11") {
-    qubit->gateX();
-    qubit->gateZ();
-  } else {
-    throw cRuntimeError("applyDenseEncoding: invalid 2-bit symbol '%s'", bits.c_str());
-  }
-}
-
-std::string QSDCApplication::decodeDensePair(quisp::modules::StationaryQubit* local_qubit, backends::IQubit* remote_qubit) {
-  remote_qubit->gateCNOT(local_qubit->getBackendQubitRef());
-  remote_qubit->gateH();
-
-  int first = eigenToInt(remote_qubit->measureZ());
-  int second = eigenToInt(local_qubit->measureZ());
-
-  auto bit = [](int x) { return (x == +1) ? '0' : '1'; };
-
-  std::string out;
-  out.push_back(bit(first));
-  out.push_back(bit(second));
-  return out;
-}
-
+// Step 7: if sampling succeeds, then proceed to the actual message sending phase, via dense coding
 void QSDCApplication::startDenseTransmission() {
   bob_decoded_symbols.clear();
   payload_indices.clear();
@@ -633,6 +585,28 @@ void QSDCApplication::startDenseTransmission() {
   }
 }
 
+// (part of step 7) Alice uses this to encode a message into bell pairs
+void QSDCApplication::applyDenseEncoding(quisp::modules::StationaryQubit* qubit, const std::string& bits) {
+  // Dense coding map for initial phi+:
+  // 00 -> I
+  // 01 -> X
+  // 10 -> Z
+  // 11 -> X then Z
+  if (bits == "00") {
+    return;
+  } else if (bits == "01") {
+    qubit->gateX();
+  } else if (bits == "10") {
+    qubit->gateZ();
+  } else if (bits == "11") {
+    qubit->gateX();
+    qubit->gateZ();
+  } else {
+    throw cRuntimeError("applyDenseEncoding: invalid 2-bit symbol '%s'", bits.c_str());
+  }
+}
+
+// (part of step 7) Alice uses this to send her dense encoded qubit
 void QSDCApplication::sendDensePhoton(int qi, quisp::modules::StationaryQubit* encoded_qubit) {
   auto* photon = new quisp::messages::PhotonicQubit("DENSE_PHOTON");
   photon->setMessage_type("dense_payload");
@@ -646,6 +620,42 @@ void QSDCApplication::sendDensePhoton(int qi, quisp::modules::StationaryQubit* e
   send(photon, "toQuantum");
 
   QLOG("[QSDC] Dense photon sent through quantum channel: qi=" << qi);
+}
+
+// (part of step 7) Bob decodes Alice's qubit
+std::string QSDCApplication::decodeDensePair(quisp::modules::StationaryQubit* local_qubit, backends::IQubit* remote_qubit) {
+  remote_qubit->gateCNOT(local_qubit->getBackendQubitRef());
+  remote_qubit->gateH();
+
+  int first = eigenToInt(remote_qubit->measureZ());
+  int second = eigenToInt(local_qubit->measureZ());
+
+  auto bit = [](int x) { return (x == +1) ? '0' : '1'; };
+
+  std::string out;
+  out.push_back(bit(first));
+  out.push_back(bit(second));
+  return out;
+}
+
+// Helpers:
+
+// Logic to retrieve bell pairs
+omnetpp::cModule* QSDCApplication::getLocalEntangledQnic() {
+  auto* qnode = provider.getQNode();
+  if (!qnode) return nullptr;
+
+  // Reading bell pairs
+  if (is_initiator) {
+    if (auto* m = qnode->getSubmodule("qnic_r", 0)) return m;
+  } else {
+    if (auto* m = qnode->getSubmodule("qnic", 0)) return m;
+  }
+
+  // Fallbacks
+  if (auto* m = qnode->getSubmodule("qnic_r", 0)) return m;
+  if (auto* m = qnode->getSubmodule("qnic", 0)) return m;
+  return nullptr;
 }
 
 }  // namespace quisp::modules
