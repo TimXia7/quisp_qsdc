@@ -89,6 +89,8 @@ void QSDCApplication::initialize() {
   start_delay = par("start_delay");
   poll_interval = par("poll_interval");
   sample_interval = par("sample_interval");
+  burn_count = par("burn_count").intValue();
+  burn_current = 0;
 
   if (is_initiator) {
     scheduleAt(simTime(), new cMessage(SELF_START_ONCE));
@@ -464,6 +466,15 @@ void QSDCApplication::handleMessage(cMessage* msg) {
 
   // (part of step 6) Alice's messages side: receives ENT_RESP, the sample response from Bob
   if (strcmp(msg->getName(), ENT_RESP) == 0) {
+
+    if (burn_current < burn_count) {
+      ++burn_current;
+      QLOG("[QSDC] burning qubit " << burn_current << "/" << burn_count);
+      delete msg;
+      scheduleAt(simTime() + sample_interval, new cMessage(SELF_NEXT_SAMPLE));
+      return;
+    }
+
     const int qi = (int)msg->par("qubit_index").longValue();
     const char basis = msg->par("basis").stringValue()[0];
     const int bob_res = (int)msg->par("bob_result").longValue();

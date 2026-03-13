@@ -16,6 +16,7 @@ simple QSDCApplication
     double start_delay @unit(s) = default(0s);
     double poll_interval @unit(s) = default(0s);
     double sample_interval @unit(s) = default(0s);
+    int burn_count;
 
     double max_error_rate = default(0.1);
 	string payload = default("hello world");

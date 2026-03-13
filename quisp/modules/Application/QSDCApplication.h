@@ -38,6 +38,8 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   unsigned long active_ruleset_id = 0;
   bool sampling_started = false;
 
+  int burn_count = 0;
+  int burn_current = 0;
   int min_pairs_to_start = 0;
   int sample_target = 0;
   int samples_done = 0;
