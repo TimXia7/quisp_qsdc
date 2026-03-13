@@ -98,6 +98,7 @@ void Router::handleMessage(cMessage *msg) {
     return;
   } else if (dest_addr == my_address && dynamic_cast<ConnectionSetupResponse *>(msg)) {
     bubble("Connection setup response received");
+    send(pk->dup(), "toApp");
     send(pk, "cmPort$o");
     return;
   } else if (dest_addr == my_address && dynamic_cast<RejectConnectionSetupRequest *>(msg)) {

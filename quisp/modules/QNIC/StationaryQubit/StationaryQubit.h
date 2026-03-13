@@ -42,6 +42,9 @@ class StationaryQubit : public IStationaryQubit {
   void Unlock() override;
   bool isLocked() override;
 
+  // qsdc change: getter to check if the qubit is busy
+  bool isBusy() const { return is_busy; }
+
   /**
    * \brief Emit photon.
    * \param pulse is 1 for the beginning of the burst, 2 for the end.
