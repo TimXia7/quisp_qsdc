@@ -37,6 +37,7 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
 
   unsigned long active_ruleset_id = 0;
   bool sampling_started = false;
+  bool protocol_started = false;
 
   int burn_count = 0;
   int burn_current = 0;
@@ -52,12 +53,12 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   omnetpp::simtime_t sample_interval = 0;
 
   struct PendingCheck {
-    char basis;
-    int alice_result;
+    char alice_basis;
+    int alice_bit;
   };
 
   std::unordered_map<int, PendingCheck> pending_checks;
-  std::unordered_set<int> used_indices;  // indices already consumed by sampling
+  std::unordered_set<int> used_indices;
 
   // OMNeT lifecycle
   void initialize() override;
@@ -71,6 +72,12 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   // Count "ready" pair slots and return their indices.
   int countReadyPairsAndCollect(std::vector<int>& out_indices);
   void doNextSample();
+
+  void resetQubitToZero(quisp::modules::StationaryQubit* qubit);
+  void prepareTestState(quisp::modules::StationaryQubit* qubit, char basis, int bit);
+  void sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit, char basis, int bit);
+
+  void sendSamplePhoton(int sample_id, char basis, int bit);
 
   // Dense encoding, sending the message through the quantum channel
   void startDenseTransmission();
