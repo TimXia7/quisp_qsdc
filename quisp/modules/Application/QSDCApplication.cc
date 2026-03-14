@@ -328,8 +328,6 @@ void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* 
 
   photon->addPar("src_addr") = my_address;
   photon->addPar("qubit_index") = qi;
-  photon->addPar("alice_basis") = std::string(1, basis).c_str();
-  photon->addPar("alice_bit") = bit;
 
   send(photon, "toQuantum");
 
