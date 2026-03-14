@@ -216,7 +216,7 @@ int QSDCApplication::countReadyPairsAndCollect(std::vector<int>& out_indices) {
   return (int)out_indices.size();
 }
 
-// Step 5: Sampling begins; Alice prepares dedicated test qubits in random X/Z bases
+// Step 5: Phase 1 driver, Sampling begins; Alice prepares dedicated test qubits in random X/Z bases
 // and random bit values, then sends them unmeasured through the same quantum channel
 // used later for the dense-coded message. Bob measures each incoming test photon in a
 // random basis and reports his basis/result classically. Alice compares only the
@@ -346,6 +346,7 @@ int QSDCApplication::measureLocalInBasis(quisp::modules::StationaryQubit* qubit,
   throw cRuntimeError("measureLocalInBasis: invalid basis '%c'", basis);
 }
 
+// Step 6: Phase 2: test bell pair correlations
 void QSDCApplication::startBellCheckPhase() {
   bell_check_started = true;
   bell_samples_done = 0;
@@ -376,6 +377,7 @@ void QSDCApplication::sendBellCheckRequest(int qi, char basis) {
   QLOG("[QSDC] BELLCHECK_REQ sent: qi=" << qi << " basis=" << basis);
 }
 
+// (part of step 6)  the main driver for phase 2
 void QSDCApplication::doNextBellCheck() {
   if (!is_initiator) return;
 
