@@ -8,10 +8,11 @@ simple QSDCApplication
     int number_of_bellpair;
     int bob_addr = default(1);
 
-    // Sampling controls (with defaults)
     int min_pairs_to_start = default(8);
     int sample_target = default(32);
     bool expect_anti = default(false);
+
+    int bell_sample_target = default(16);
 
     double start_delay @unit(s) = default(0s);
     double poll_interval @unit(s) = default(0s);
@@ -19,7 +20,13 @@ simple QSDCApplication
     int burn_count;
 
     double max_error_rate = default(0.1);
-	string payload = default("hello world");
+    double max_bell_error_rate = default(0.1);
+
+    string payload = default("hello world");
+
+    // Eve settings
+    bool eve_enabled = default(false);
+    double eve_intercept_probability = default(1.0);
 
   gates:
     input fromRouter @loose;
