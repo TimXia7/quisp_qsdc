@@ -216,11 +216,7 @@ int QSDCApplication::countReadyPairsAndCollect(std::vector<int>& out_indices) {
   return (int)out_indices.size();
 }
 
-// Step 5: Phase 1 driver, Sampling begins; Alice prepares dedicated test qubits in random X/Z bases
-// and random bit values, then sends them unmeasured through the same quantum channel
-// used later for the dense-coded message. Bob measures each incoming test photon in a
-// random basis and reports his basis/result classically. Alice compares only the
-// matched-basis cases to estimate the channel error rate.
+// Step 5: Phase 1 driver
 void QSDCApplication::doNextSample() {
   if (!is_initiator) return;
 
@@ -231,7 +227,7 @@ void QSDCApplication::doNextSample() {
 
   if (samples_done >= sample_target) {
     const double err_rate = (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
-    QLOG("[QSDC] Sampling finished: samples=" << samples_done
+    QLOG("[QSDC] Phase 1 finished: samples=" << samples_done
          << " errors=" << errors
          << " error_rate=" << err_rate);
 
@@ -243,11 +239,12 @@ void QSDCApplication::doNextSample() {
     }
     return;
   }
+
   std::vector<int> ready;
   const int n_ready = countReadyPairsAndCollect(ready);
 
   if (n_ready == 0) {
-    QLOG("[QSDC] No ready slots right now; polling again");
+    QLOG("[QSDC] No ready Bell pairs right now; polling again");
     scheduleAt(simTime() + poll_interval, new cMessage(SELF_WAIT_FOR_PAIRS));
     return;
   }
@@ -256,84 +253,74 @@ void QSDCApplication::doNextSample() {
 
   auto* qnic = getLocalEntangledQnic();
   if (!qnic) {
-    QLOG("[QSDC] No local qnic found for sampling.");
+    QLOG("[QSDC] No local qnic found for Phase 1.");
     return;
   }
 
   auto* sq_mod = qnic->getSubmodule("statQubit", qi);
   if (!sq_mod) {
-    QLOG("[QSDC] statQubit[" << qi << "] not found on local qnic");
+    QLOG("[QSDC] statQubit[" << qi << "] not found on Alice");
     scheduleAt(simTime() + poll_interval, new cMessage(SELF_WAIT_FOR_PAIRS));
     return;
   }
 
   auto* qubit = check_and_cast<quisp::modules::StationaryQubit*>(sq_mod);
 
-  // Sacrifice this Bell-pair slot for testing:
-  // reset to |0>
-  resetQubitToZero(qubit);
+  // Alice randomly applies X or Z to HER HALF of the Bell pair
+  const char alice_op = (dblrand() < 0.5) ? 'X' : 'Z';
 
-  const char basis = (dblrand() < 0.5) ? 'Z' : 'X';
-  const int bit = (dblrand() < 0.5) ? 0 : 1;
+  if (alice_op == 'X') {
+    qubit->gateX();
+  } else {
+    qubit->gateZ();
+  }
 
-  prepareTestState(qubit, basis, bit);
-
-  pending_checks[qi] = PendingCheck{basis, bit};
+  pending_checks[qi] = PendingEntCheck{alice_op};
   used_indices.insert(qi);
 
-  QLOG("[QSDC] Sample request " << (samples_done + 1)
+  QLOG("[QSDC] Phase 1 sample " << (samples_done + 1)
        << ": qi=" << qi
-       << " prepared_basis=" << basis
-       << " prepared_bit=" << bit
-       << " sending SAMPLE_PHOTON through quantum channel");
+       << " alice_op=" << alice_op
+       << " sending Alice half through quantum channel");
 
-  sendSamplePhoton(qi, qubit, basis, bit);
+  sendSamplePhoton(qi, qubit, alice_op);
 }
 
-void QSDCApplication::resetQubitToZero(quisp::modules::StationaryQubit* qubit) {
-  // Force the sacrificial memory qubit into |0>.
-  // Measure in Z; if result is |1>, flip it to |0>.
-  const int z = eigenToInt(qubit->measureZ());
-  if (z == -1) {
-    qubit->gateX();
-  }
-}
+void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit, char op) {
+  // Eve attack model for Phase 1:
+  // Just before Alice sends her half through the channel, Eve may intercept it,
+  // measure it in a random basis, and then the collapsed qubit is what gets
+  // forwarded to Bob. This is an in-place intercept/resend approximation.
+  if (eve_enabled && dblrand() < eve_intercept_probability) {
+    const char eve_basis = (dblrand() < 0.5) ? 'X' : 'Z';
+    int eve_bit = 0;
 
-void QSDCApplication::prepareTestState(quisp::modules::StationaryQubit* qubit, char basis, int bit) {
-  // Starting from |0>, prepare one of:
-  // Z basis: |0>, |1>
-  // X basis: |+>, |->
-  if (basis == 'Z') {
-    if (bit == 1) {
-      qubit->gateX();  // |1>
-    }
-  } else if (basis == 'X') {
-    if (bit == 0) {
-      qubit->gateHadamard();  // |+>
+    if (eve_basis == 'X') {
+      eve_bit = (eigenToInt(qubit->measureX()) == +1) ? 0 : 1;
     } else {
-      qubit->gateX();
-      qubit->gateHadamard();  // |->
+      eve_bit = (eigenToInt(qubit->measureZ()) == +1) ? 0 : 1;
     }
-  } else {
-    throw cRuntimeError("prepareTestState: invalid basis '%c'", basis);
-  }
-}
 
-void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit, char basis, int bit) {
+    QLOG("[QSDC] EVE intercepted SAMPLE_PHOTON before send: qi=" << qi
+         << " alice_op=" << op
+         << " eve_basis=" << eve_basis
+         << " eve_bit=" << eve_bit
+         << " prob=" << eve_intercept_probability);
+  }
+
   auto* photon = new quisp::messages::PhotonicQubit("SAMPLE_PHOTON");
   photon->setMessage_type(SAMPLE_PHOTON);
 
-  // This is the important part: send the actual qubit through the channel.
   photon->setQubitRef(qubit->getBackendQubitRef());
 
   photon->addPar("src_addr") = my_address;
   photon->addPar("qubit_index") = qi;
+  photon->addPar("alice_op") = std::string(1, op).c_str();
 
   send(photon, "toQuantum");
 
   QLOG("[QSDC] Sample photon sent through quantum channel: qi=" << qi
-       << " basis=" << basis
-       << " bit=" << bit);
+       << " alice_op=" << op);
 }
 
 int QSDCApplication::measureLocalInBasis(quisp::modules::StationaryQubit* qubit, char basis) {
@@ -432,7 +419,7 @@ void QSDCApplication::doNextBellCheck() {
   const char basis = (dblrand() < 0.5) ? 'Z' : 'X';
   const int alice_bit = measureLocalInBasis(qubit, basis);
 
-  pending_bell_checks[qi] = PendingCheck{basis, alice_bit};
+  pending_bell_checks[qi] = PendingBellCheck{basis, alice_bit};
   used_indices.insert(qi);
 
   QLOG("[QSDC] Bell check request " << (bell_samples_done + 1)
@@ -467,70 +454,52 @@ void QSDCApplication::handleMessage(cMessage* msg) {
         respmsg->setKind(1);
 
         respmsg->addPar("qubit_index") = qi;
-        respmsg->addPar("basis") = "LOST";
-        respmsg->addPar("bob_result") = -999;
+        respmsg->addPar("bob_op") = "LOST";
+        respmsg->addPar("decoded_bits") = "LOST";
 
         send(respmsg, "toRouter");
         delete photon;
         return;
       }
 
-      auto* flying_qubit = const_cast<backends::IQubit*>(photon->getQubitRef());
-      if (!flying_qubit) {
-        QLOG("[QSDC] Sample photon arrived with null qubit ref: qi=" << qi);
+      auto* qnic = getLocalEntangledQnic();
+      if (!qnic) {
+        QLOG("[QSDC] SAMPLE_PHOTON: no local qnic on Bob");
         delete photon;
         return;
       }
 
-      // Bob chooses random basis independently
-      const char bob_basis = (dblrand() < 0.5) ? 'Z' : 'X';
-      int bob_bit = 0;
-
-      // Proper BB84 intercept-resend model for Eve:
-      // Eve measures in a random basis, then resends a fresh state consistent
-      // with her basis/result. Instead of physically constructing a new qubit,
-      // we compute Bob's outcome from the resend logic directly:
-      // - if Bob measures in Eve's basis, Bob gets Eve's bit
-      // - otherwise Bob gets a random bit
-
-      // If Eve is not active, Bob measures the original flying qubit normally.
-      if (!is_initiator && eve_enabled && dblrand() < eve_intercept_probability) {
-        const char eve_basis = (dblrand() < 0.5) ? 'Z' : 'X';
-        int eve_bit = 0;
-
-        // Eve measures the original qubit to obtain her result.
-        if (eve_basis == 'Z') {
-          eve_bit = (eigenToInt(flying_qubit->measureZ()) == +1) ? 0 : 1;
-        } else {
-          eve_bit = (eigenToInt(flying_qubit->measureX()) == +1) ? 0 : 1;
-        }
-
-        // Intercept-resend abstraction:
-        // Bob measures the resent qubit, not the already-measured original object.
-        if (bob_basis == eve_basis) {
-          bob_bit = eve_bit;
-        } else {
-          bob_bit = (dblrand() < 0.5) ? 0 : 1;
-        }
-
-        QLOG("[QSDC] EVE intercepted SAMPLE_PHOTON: qi=" << qi
-             << " eve_basis=" << eve_basis
-             << " eve_bit=" << eve_bit
-             << " bob_basis=" << bob_basis
-             << " bob_effective_bit=" << bob_bit
-             << " prob=" << eve_intercept_probability);
-      } else {
-        // No Eve: Bob measures the actual  qubit directly.
-        if (bob_basis == 'Z') {
-          bob_bit = (eigenToInt(flying_qubit->measureZ()) == +1) ? 0 : 1;
-        } else {
-          bob_bit = (eigenToInt(flying_qubit->measureX()) == +1) ? 0 : 1;
-        }
+      auto* bob_mod = qnic->getSubmodule("statQubit", qi);
+      if (!bob_mod) {
+        QLOG("[QSDC] SAMPLE_PHOTON: Bob statQubit[" << qi << "] missing");
+        delete photon;
+        return;
       }
 
-      QLOG("[QSDC] SAMPLE_PHOTON: Bob measured qi=" << qi
-           << " basis=" << bob_basis
-           << " bob_bit=" << bob_bit);
+      auto* bob_qubit = check_and_cast<quisp::modules::StationaryQubit*>(bob_mod);
+
+      auto* flying_qubit = const_cast<backends::IQubit*>(photon->getQubitRef());
+      if (!flying_qubit) {
+        QLOG("[QSDC] SAMPLE_PHOTON arrived with null qubit ref: qi=" << qi);
+        delete photon;
+        return;
+      }
+
+      // Bob randomly applies X or Z to HIS HALF
+      const char bob_op = (dblrand() < 0.5) ? 'X' : 'Z';
+
+      if (bob_op == 'X') {
+        bob_qubit->gateX();
+      } else {
+        bob_qubit->gateZ();
+      }
+
+      // Decode Bell state
+      std::string decoded_bits = decodeDensePair(bob_qubit, flying_qubit);
+
+      QLOG("[QSDC] SAMPLE_PHOTON Phase 1 decode: qi=" << qi
+           << " bob_op=" << bob_op
+           << " decoded_bits=" << decoded_bits);
 
       auto* respmsg = new Header(ENT_RESP);
       respmsg->setSrcAddr(my_address);
@@ -538,8 +507,8 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       respmsg->setKind(1);
 
       respmsg->addPar("qubit_index") = qi;
-      respmsg->addPar("basis") = std::string(1, bob_basis).c_str();
-      respmsg->addPar("bob_result") = bob_bit;
+      respmsg->addPar("bob_op") = std::string(1, bob_op).c_str();
+      respmsg->addPar("decoded_bits") = decoded_bits.c_str();
 
       send(respmsg, "toRouter");
       delete photon;
@@ -769,7 +738,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
 
   if (strcmp(msg->getName(), ENT_RESP) == 0) {
     const int qi = (int)msg->par("qubit_index").longValue();
-    const std::string basis_str = msg->par("basis").stringValue();
+    const std::string bob_op_str = msg->par("bob_op").stringValue();
 
     auto it = pending_checks.find(qi);
     if (it == pending_checks.end()) {
@@ -778,11 +747,10 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       return;
     }
 
-    const char alice_basis = it->second.basis;
-    const int alice_bit = it->second.bit;
+    const char alice_op = it->second.op;
     pending_checks.erase(it);
 
-    if (basis_str == "LOST") {
+    if (bob_op_str == "LOST") {
       QLOG("[QSDC] Sample result: qi=" << qi << " LOST in channel");
 
       if (burn_current < burn_count) {
@@ -804,8 +772,8 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       return;
     }
 
-    const char bob_basis = basis_str[0];
-    const int bob_bit = (int)msg->par("bob_result").longValue();
+    const char bob_op = bob_op_str[0];
+    const std::string decoded_bits = msg->par("decoded_bits").stringValue();
 
     if (burn_current < burn_count) {
       ++burn_current;
@@ -816,17 +784,18 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       return;
     }
 
-    if (alice_basis != bob_basis) {
+    if (alice_op != bob_op) {
       QLOG("[QSDC] Sample discarded: qi=" << qi
-           << " alice_basis=" << alice_basis
-           << " bob_basis=" << bob_basis
-           << " (basis mismatch)");
+           << " alice_op=" << alice_op
+           << " bob_op=" << bob_op
+           << " (operation mismatch)");
       delete msg;
       scheduleAt(simTime() + sample_interval, new cMessage(SELF_NEXT_SAMPLE));
       return;
     }
 
-    const bool pass = (alice_bit == bob_bit);
+    // same operation on both halves should preserve phi+
+    const bool pass = (decoded_bits == "00");
 
     samples_done++;
     if (!pass) errors++;
@@ -834,10 +803,10 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     const double err_rate = (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
 
     QLOG("[QSDC] Sample result: qi=" << qi
-         << " alice_basis=" << alice_basis
-         << " bob_basis=" << bob_basis
-         << " alice_bit=" << alice_bit
-         << " bob_bit=" << bob_bit
+         << " alice_op=" << alice_op
+         << " bob_op=" << bob_op
+         << " decoded_bits=" << decoded_bits
+         << " expected=00(phi+)"
          << " pass=" << (pass ? "YES" : "NO")
          << " samples=" << samples_done
          << " errors=" << errors

@@ -60,13 +60,17 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   omnetpp::simtime_t poll_interval = 0;
   omnetpp::simtime_t sample_interval = 0;
 
-  struct PendingCheck {
-    char basis;
-    int bit;
+  struct PendingEntCheck {
+    char op;   // 'X' or 'Z'
   };
 
-  std::unordered_map<int, PendingCheck> pending_checks;       // Phase 1
-  std::unordered_map<int, PendingCheck> pending_bell_checks;  // Phase 2
+  struct PendingBellCheck {
+    char basis; // 'X' or 'Z'
+    int bit;    // measured 0/1
+  };
+
+  std::unordered_map<int, PendingEntCheck> pending_checks;       // Phase 1
+  std::unordered_map<int, PendingBellCheck> pending_bell_checks;  // Phase 2
   std::unordered_set<int> used_indices;
 
   void initialize() override;
@@ -80,9 +84,7 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
 
   // Phase 1
   void doNextSample();
-  void resetQubitToZero(quisp::modules::StationaryQubit* qubit);
-  void prepareTestState(quisp::modules::StationaryQubit* qubit, char basis, int bit);
-  void sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit, char basis, int bit);
+  void sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit, char op);
 
   // Phase 2
   void startBellCheckPhase();
