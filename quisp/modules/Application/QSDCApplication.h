@@ -91,6 +91,7 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   void doNextBellCheck();
   void sendBellCheckRequest(int qi, char basis);
   int measureLocalInBasis(quisp::modules::StationaryQubit* qubit, char basis);
+  int measureRemoteInBasis(backends::IQubit* qubit, char basis);
 
   // Phase 3
   void startDenseTransmission();

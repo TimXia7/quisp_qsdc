@@ -333,6 +333,16 @@ int QSDCApplication::measureLocalInBasis(quisp::modules::StationaryQubit* qubit,
   throw cRuntimeError("measureLocalInBasis: invalid basis '%c'", basis);
 }
 
+int QSDCApplication::measureRemoteInBasis(backends::IQubit* qubit, char basis) {
+  if (basis == 'Z') {
+    return (eigenToInt(qubit->measureZ()) == +1) ? 0 : 1;
+  }
+  if (basis == 'X') {
+    return (eigenToInt(qubit->measureX()) == +1) ? 0 : 1;
+  }
+  throw cRuntimeError("measureRemoteInBasis: invalid basis '%c'", basis);
+}
+
 // Step 6: Phase 2: test bell pair correlations
 void QSDCApplication::startBellCheckPhase() {
   bell_check_started = true;
@@ -455,7 +465,8 @@ void QSDCApplication::handleMessage(cMessage* msg) {
 
         respmsg->addPar("qubit_index") = qi;
         respmsg->addPar("bob_op") = "LOST";
-        respmsg->addPar("decoded_bits") = "LOST";
+        respmsg->addPar("bob_local_bit") = -999;
+        respmsg->addPar("bob_flying_bit") = -999;
 
         send(respmsg, "toRouter");
         delete photon;
@@ -494,12 +505,15 @@ void QSDCApplication::handleMessage(cMessage* msg) {
         bob_qubit->gateZ();
       }
 
-      // Decode Bell state
-      std::string decoded_bits = decodeDensePair(bob_qubit, flying_qubit);
+      // Instead of Bell decoding, Bob compares the two qubits by measuring
+      // both in the same basis/op he chose.
+      const int bob_local_bit = measureLocalInBasis(bob_qubit, bob_op);
+      const int bob_flying_bit = measureRemoteInBasis(flying_qubit, bob_op);
 
-      QLOG("[QSDC] SAMPLE_PHOTON Phase 1 decode: qi=" << qi
+      QLOG("[QSDC] SAMPLE_PHOTON Phase 1 compare: qi=" << qi
            << " bob_op=" << bob_op
-           << " decoded_bits=" << decoded_bits);
+           << " bob_local_bit=" << bob_local_bit
+           << " bob_flying_bit=" << bob_flying_bit);
 
       auto* respmsg = new Header(ENT_RESP);
       respmsg->setSrcAddr(my_address);
@@ -508,7 +522,8 @@ void QSDCApplication::handleMessage(cMessage* msg) {
 
       respmsg->addPar("qubit_index") = qi;
       respmsg->addPar("bob_op") = std::string(1, bob_op).c_str();
-      respmsg->addPar("decoded_bits") = decoded_bits.c_str();
+      respmsg->addPar("bob_local_bit") = bob_local_bit;
+      respmsg->addPar("bob_flying_bit") = bob_flying_bit;
 
       send(respmsg, "toRouter");
       delete photon;
@@ -773,7 +788,8 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     }
 
     const char bob_op = bob_op_str[0];
-    const std::string decoded_bits = msg->par("decoded_bits").stringValue();
+    const int bob_local_bit = (int)msg->par("bob_local_bit").longValue();
+    const int bob_flying_bit = (int)msg->par("bob_flying_bit").longValue();
 
     if (burn_current < burn_count) {
       ++burn_current;
@@ -794,8 +810,8 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       return;
     }
 
-    // same operation on both halves should preserve phi+
-    const bool pass = (decoded_bits == "00");
+    // Bob compares the two qubits directly: do their measured bits match?
+    const bool pass = (bob_local_bit == bob_flying_bit);
 
     samples_done++;
     if (!pass) errors++;
@@ -805,8 +821,8 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     QLOG("[QSDC] Sample result: qi=" << qi
          << " alice_op=" << alice_op
          << " bob_op=" << bob_op
-         << " decoded_bits=" << decoded_bits
-         << " expected=00(phi+)"
+         << " bob_local_bit=" << bob_local_bit
+         << " bob_flying_bit=" << bob_flying_bit
          << " pass=" << (pass ? "YES" : "NO")
          << " samples=" << samples_done
          << " errors=" << errors
