@@ -153,11 +153,14 @@ void QSDCApplication::startQSDCProtocol(unsigned long ruleset_id) {
 
   active_ruleset_id = ruleset_id;
 
+  // Phase 1 (channel/QKD-like check) state
   samples_done = 0;
   errors = 0;
   sampling_started = false;
   burn_current = 0;
   pending_checks.clear();
+
+  // Phase 2 (Bell verification) state
   bell_check_started = false;
   bell_samples_done = 0;
   bell_errors = 0;
@@ -166,8 +169,9 @@ void QSDCApplication::startQSDCProtocol(unsigned long ruleset_id) {
   // Bell-pair usage stays separate for dense coding
   used_indices.clear();
 
-  QLOG("[QSDC] Starting sampling after delay=" << start_delay
-       << ", waiting for >= " << min_pairs_to_start << " ready Bell pairs for later dense phase.");
+  QLOG("[QSDC] Starting protocol after delay=" << start_delay
+       << ", waiting for >= " << min_pairs_to_start
+       << " ready Bell pairs before Bell-pair verification.");
 
   scheduleAt(simTime() + start_delay, new cMessage(SELF_WAIT_FOR_PAIRS));
 }
@@ -182,8 +186,15 @@ void QSDCApplication::pollUntilEnoughPairs() {
   QLOG("[QSDC] Ready slots=" << n_ready << " (need >= " << min_pairs_to_start << ")");
 
   if (n_ready >= min_pairs_to_start) {
-    sampling_started = true;
-    scheduleAt(simTime(), new cMessage(SELF_NEXT_SAMPLE));
+    if (!bell_check_started && bell_samples_done == 0) {
+      QLOG("[QSDC] Enough Bell pairs available; starting Bell-pair correlation check first.");
+      startBellCheckPhase();
+    } else if (bell_check_started) {
+      scheduleAt(simTime(), new cMessage(SELF_NEXT_BELL_CHECK));
+    } else {
+      sampling_started = true;
+      scheduleAt(simTime(), new cMessage(SELF_NEXT_SAMPLE));
+    }
   } else {
     scheduleAt(simTime() + poll_interval, new cMessage(SELF_WAIT_FOR_PAIRS));
   }
@@ -227,13 +238,13 @@ void QSDCApplication::doNextSample() {
 
   if (samples_done >= sample_target) {
     const double err_rate = (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
-    QLOG("[QSDC] Phase 1 finished: samples=" << samples_done
+    QLOG("[QSDC] Channel/QKD-like verification finished: samples=" << samples_done
          << " errors=" << errors
          << " error_rate=" << err_rate);
 
     if (err_rate <= par("max_error_rate").doubleValue()) {
-      QLOG("[QSDC] Channel accepted; starting Bell-pair correlation check.");
-      startBellCheckPhase();
+      QLOG("[QSDC] Channel accepted; starting dense-coded message transmission.");
+      scheduleAt(simTime() + sample_interval, new cMessage(SELF_START_MESSAGE));
     } else {
       QLOG("[QSDC] Channel rejected; dense-coded transmission aborted.");
     }
@@ -391,9 +402,12 @@ void QSDCApplication::doNextBellCheck() {
          << " errors=" << bell_errors
          << " error_rate=" << bell_err_rate);
 
+    bell_check_started = false;
+
     if (bell_err_rate <= par("max_bell_error_rate").doubleValue()) {
-      QLOG("[QSDC] Bell pairs accepted; starting dense-coded message transmission.");
-      scheduleAt(simTime() + sample_interval, new cMessage(SELF_START_MESSAGE));
+      QLOG("[QSDC] Bell pairs accepted; starting channel/QKD-like verification.");
+      sampling_started = true;
+      scheduleAt(simTime() + sample_interval, new cMessage(SELF_NEXT_SAMPLE));
     } else {
       QLOG("[QSDC] Bell pairs rejected; dense-coded transmission aborted.");
     }
@@ -404,7 +418,7 @@ void QSDCApplication::doNextBellCheck() {
   const int n_ready = countReadyPairsAndCollect(ready);
 
   if (n_ready == 0) {
-    QLOG("[QSDC] No ready Bell pairs for Phase 2 right now; polling again");
+    QLOG("[QSDC] No ready Bell pairs for Bell verification right now; polling again");
     scheduleAt(simTime() + poll_interval, new cMessage(SELF_NEXT_BELL_CHECK));
     return;
   }
