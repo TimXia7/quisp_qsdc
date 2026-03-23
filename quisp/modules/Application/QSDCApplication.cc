@@ -226,7 +226,7 @@ int QSDCApplication::countReadyPairsAndCollect(std::vector<int>& out_indices) {
   return (int)out_indices.size();
 }
 
-// Step 5: Phase 1 driver
+// Step : Phase 2 driver
 void QSDCApplication::doNextSample() {
   if (!is_initiator) return;
 
@@ -263,7 +263,7 @@ void QSDCApplication::doNextSample() {
 
   auto* qnic = getLocalEntangledQnic();
   if (!qnic) {
-    QLOG("[QSDC] No local qnic found for Phase 1.");
+    QLOG("[QSDC] No local qnic found for Phase 2.");
     return;
   }
 
@@ -288,7 +288,7 @@ void QSDCApplication::doNextSample() {
   pending_checks[qi] = PendingEntCheck{alice_op};
   used_indices.insert(qi);
 
-  QLOG("[QSDC] Phase 1 sample " << (samples_done + 1)
+  QLOG("[QSDC] Phase 2 sample " << (samples_done + 1)
        << ": qi=" << qi
        << " alice_op=" << alice_op
        << " sending Alice half through quantum channel");
@@ -297,7 +297,7 @@ void QSDCApplication::doNextSample() {
 }
 
 void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit, char op) {
-  // Eve attack model for Phase 1:
+  // Eve attack model for Phase 2:
   // Just before Alice sends her half through the channel, Eve may intercept it,
   // measure it in a random basis, and then the collapsed qubit is what gets
   // forwarded to Bob. This is an in-place intercept/resend approximation.
@@ -343,7 +343,7 @@ int QSDCApplication::measureLocalInBasis(quisp::modules::StationaryQubit* qubit,
   throw cRuntimeError("measureLocalInBasis: invalid basis '%c'", basis);
 }
 
-// Step 6: Phase 2: test bell pair correlations
+// Step: Phase 1: test bell pair correlations
 void QSDCApplication::startBellCheckPhase() {
   bell_check_started = true;
   bell_samples_done = 0;
@@ -510,7 +510,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       // Decode Bell state
       std::string decoded_bits = decodeDensePair(bob_qubit, flying_qubit);
 
-      QLOG("[QSDC] SAMPLE_PHOTON Phase 1 decode: qi=" << qi
+      QLOG("[QSDC] SAMPLE_PHOTON Phase 2 decode: qi=" << qi
            << " bob_op=" << bob_op
            << " decoded_bits=" << decoded_bits);
 
