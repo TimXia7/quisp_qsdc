@@ -160,7 +160,7 @@ void QSDCApplication::startQSDCProtocol(unsigned long ruleset_id) {
 
   active_ruleset_id = ruleset_id;
 
-  // Channel/QKD-like phase state
+  // Direct channel-verification phase state
   samples_done = 0;
   errors = 0;
   sampling_started = false;
@@ -256,7 +256,7 @@ void QSDCApplication::doNextSample() {
 
   if (samples_done >= sample_target) {
     const double err_rate = (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
-    QLOG("[QSDC] Channel/QKD-like verification finished: samples=" << samples_done
+    QLOG("[QSDC] Channel verification finished: samples=" << samples_done
          << " errors=" << errors
          << " error_rate=" << err_rate);
 
@@ -288,11 +288,12 @@ void QSDCApplication::doNextSample() {
   current_sample_block_sent = 0;
 
   const int remaining_needed = sample_target - samples_done;
-  const int block_target = std::min( std::min(sample_block_size, remaining_needed), (int)ready.size() );
+  const int block_target =
+      std::min(std::min(sample_block_size, remaining_needed), (int)ready.size());
 
   auto* qnic = getLocalEntangledQnic();
   if (!qnic) {
-    QLOG("[QSDC] No local qnic found for Phase 1 sample block.");
+    QLOG("[QSDC] No local qnic found for Phase 2 channel-verification block.");
     return;
   }
 
@@ -304,44 +305,33 @@ void QSDCApplication::doNextSample() {
 
     auto* qubit = check_and_cast<quisp::modules::StationaryQubit*>(sq_mod);
 
-    const char alice_op = (dblrand() < 0.5) ? 'X' : 'Z';
-
-    if (alice_op == 'X') {
-      qubit->gateX();
-    } else {
-      qubit->gateZ();
-    }
-
-    pending_checks[qi] = PendingEntCheck{alice_op};
+    pending_checks[qi] = PendingEntCheck{};
     used_indices.insert(qi);
     current_sample_block_indices.push_back(qi);
     current_sample_block_sent++;
 
-    QLOG("[QSDC] Sample block item " << current_sample_block_sent
+    QLOG("[QSDC] Channel-test block item " << current_sample_block_sent
          << "/" << block_target
          << ": qi=" << qi
-         << " alice_op=" << alice_op);
+         << " sending Alice half to Bob; expected Bell state=phi+");
 
-    sendSamplePhoton(qi, qubit, alice_op);
+    sendSamplePhoton(qi, qubit);
   }
 
   if (current_sample_block_sent == 0) {
-    QLOG("[QSDC] Could not form sample verification block; polling again");
+    QLOG("[QSDC] Could not form channel-verification block; polling again");
     scheduleAt(simTime() + poll_interval, new cMessage(SELF_WAIT_FOR_PAIRS));
     return;
   }
 
   waiting_for_sample_block = true;
 
-  QLOG("[QSDC] Sample verification block sent: size=" << current_sample_block_sent
+  QLOG("[QSDC] Channel-verification block sent: size=" << current_sample_block_sent
        << " total_done=" << samples_done
        << " target=" << sample_target);
 }
-void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit, char op) {
-  // Eve attack model for Phase 2:
-  // Just before Alice sends her half through the channel, Eve may intercept it,
-  // measure it in a random basis, and then the collapsed qubit is what gets
-  // forwarded to Bob. This is an in-place intercept/resend approximation.
+
+void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit) {
   if (eve_enabled && dblrand() < eve_intercept_probability) {
     const char eve_basis = (dblrand() < 0.5) ? 'X' : 'Z';
     int eve_bit = 0;
@@ -353,7 +343,6 @@ void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* 
     }
 
     QLOG("[QSDC] EVE intercepted SAMPLE_PHOTON before send: qi=" << qi
-         << " alice_op=" << op
          << " eve_basis=" << eve_basis
          << " eve_bit=" << eve_bit
          << " prob=" << eve_intercept_probability);
@@ -366,12 +355,10 @@ void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* 
 
   photon->addPar("src_addr") = my_address;
   photon->addPar("qubit_index") = qi;
-  photon->addPar("alice_op") = std::string(1, op).c_str();
 
   send(photon, "toQuantum");
 
-  QLOG("[QSDC] Sample photon sent through quantum channel: qi=" << qi
-       << " alice_op=" << op);
+  QLOG("[QSDC] Channel-test photon sent through quantum channel: qi=" << qi);
 }
 
 int QSDCApplication::measureLocalInBasis(quisp::modules::StationaryQubit* qubit, char basis) {
@@ -439,7 +426,7 @@ void QSDCApplication::doNextBellCheck() {
     bell_check_started = false;
 
     if (bell_err_rate <= par("max_bell_error_rate").doubleValue()) {
-      QLOG("[QSDC] Bell pairs accepted; starting channel/QKD-like verification.");
+      QLOG("[QSDC] Bell pairs accepted; starting direct channel verification.");
       sampling_started = true;
       waiting_for_sample_block = false;
       current_sample_block_sent = 0;
@@ -527,12 +514,13 @@ void QSDCApplication::handleMessage(cMessage* msg) {
   }
 
   if (auto* photon = dynamic_cast<quisp::messages::PhotonicQubit*>(msg)) {
+
     if (strcmp(photon->getMessage_type(), SAMPLE_PHOTON) == 0) {
       const int qi = (int)photon->par("qubit_index").longValue();
       const int src_addr = (int)photon->par("src_addr").longValue();
 
       if (photon->isLost()) {
-        QLOG("[QSDC] Sample photon lost in channel: qi=" << qi);
+        QLOG("[QSDC] Channel-test photon lost in channel: qi=" << qi);
 
         auto* respmsg = new Header(ENT_RESP);
         respmsg->setSrcAddr(my_address);
@@ -540,7 +528,6 @@ void QSDCApplication::handleMessage(cMessage* msg) {
         respmsg->setKind(1);
 
         respmsg->addPar("qubit_index") = qi;
-        respmsg->addPar("bob_op") = "LOST";
         respmsg->addPar("decoded_bits") = "LOST";
 
         send(respmsg, "toRouter");
@@ -571,21 +558,12 @@ void QSDCApplication::handleMessage(cMessage* msg) {
         return;
       }
 
-      // Bob randomly applies X or Z to HIS HALF
-      const char bob_op = (dblrand() < 0.5) ? 'X' : 'Z';
-
-      if (bob_op == 'X') {
-        bob_qubit->gateX();
-      } else {
-        bob_qubit->gateZ();
-      }
-
-      // Decode Bell state
+      // Bell decode: for an undisturbed phi+ pair, Bob should get "00"
       std::string decoded_bits = decodeDensePair(bob_qubit, flying_qubit);
 
-      QLOG("[QSDC] SAMPLE_PHOTON Phase 2 decode: qi=" << qi
-           << " bob_op=" << bob_op
-           << " decoded_bits=" << decoded_bits);
+      QLOG("[QSDC] Channel-test decode at Bob: qi=" << qi
+           << " decoded_bits=" << decoded_bits
+           << " expected=00(phi+)");
 
       auto* respmsg = new Header(ENT_RESP);
       respmsg->setSrcAddr(my_address);
@@ -593,14 +571,12 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       respmsg->setKind(1);
 
       respmsg->addPar("qubit_index") = qi;
-      respmsg->addPar("bob_op") = std::string(1, bob_op).c_str();
       respmsg->addPar("decoded_bits") = decoded_bits.c_str();
 
       send(respmsg, "toRouter");
       delete photon;
       return;
     }
-
     if (strcmp(photon->getMessage_type(), "dense_payload") == 0) {
       const int qi = (int) photon->par("qubit_index").longValue();
       const int src_addr = (int) photon->par("src_addr").longValue();
@@ -843,7 +819,6 @@ void QSDCApplication::handleMessage(cMessage* msg) {
 
   if (strcmp(msg->getName(), ENT_RESP) == 0) {
     const int qi = (int)msg->par("qubit_index").longValue();
-    const std::string bob_op_str = msg->par("bob_op").stringValue();
 
     auto it = pending_checks.find(qi);
     if (it == pending_checks.end()) {
@@ -852,11 +827,12 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       return;
     }
 
-    const char alice_op = it->second.op;
     pending_checks.erase(it);
 
-    if (bob_op_str == "LOST") {
-      QLOG("[QSDC] Sample result: qi=" << qi << " LOST in channel");
+    const std::string decoded_bits = msg->par("decoded_bits").stringValue();
+
+    if (decoded_bits == "LOST") {
+      QLOG("[QSDC] Channel-test result: qi=" << qi << " LOST in channel");
 
       if (burn_current < burn_count) {
         ++burn_current;
@@ -864,8 +840,11 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       } else {
         samples_done++;
         errors++;
-        const double err_rate = (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
-        QLOG("[QSDC] Sample result: qi=" << qi
+
+        const double err_rate =
+            (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
+
+        QLOG("[QSDC] Channel-test result: qi=" << qi
              << " lost=YES"
              << " samples=" << samples_done
              << " errors=" << errors
@@ -880,7 +859,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
         const double err_rate =
             (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
 
-        QLOG("[QSDC] Sample block complete: block_size=" << current_sample_block_sent
+        QLOG("[QSDC] Channel-test block complete: block_size=" << current_sample_block_sent
              << " cumulative_samples=" << samples_done
              << " cumulative_errors=" << errors
              << " cumulative_error_rate=" << err_rate);
@@ -890,14 +869,12 @@ void QSDCApplication::handleMessage(cMessage* msg) {
 
       return;
     }
-
-    const char bob_op = bob_op_str[0];
-    const std::string decoded_bits = msg->par("decoded_bits").stringValue();
 
     if (burn_current < burn_count) {
       ++burn_current;
       QLOG("[QSDC] burning sample " << burn_current << "/" << burn_count
            << " qi=" << qi);
+
       delete msg;
 
       if (pending_checks.empty()) {
@@ -906,7 +883,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
         const double err_rate =
             (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
 
-        QLOG("[QSDC] Sample block complete: block_size=" << current_sample_block_sent
+        QLOG("[QSDC] Channel-test block complete: block_size=" << current_sample_block_sent
              << " cumulative_samples=" << samples_done
              << " cumulative_errors=" << errors
              << " cumulative_error_rate=" << err_rate);
@@ -917,41 +894,15 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       return;
     }
 
-    if (alice_op != bob_op) {
-      QLOG("[QSDC] Sample discarded: qi=" << qi
-           << " alice_op=" << alice_op
-           << " bob_op=" << bob_op
-           << " (operation mismatch)");
-      delete msg;
-
-      if (pending_checks.empty()) {
-        waiting_for_sample_block = false;
-
-        const double err_rate =
-            (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
-
-        QLOG("[QSDC] Sample block complete: block_size=" << current_sample_block_sent
-             << " cumulative_samples=" << samples_done
-             << " cumulative_errors=" << errors
-             << " cumulative_error_rate=" << err_rate);
-
-        scheduleAt(simTime() + sample_interval, new cMessage(SELF_NEXT_SAMPLE));
-      }
-
-      return;
-    }
-
-    // same operation on both halves should preserve phi+
     const bool pass = (decoded_bits == "00");
 
     samples_done++;
     if (!pass) errors++;
 
-    const double err_rate = (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
+    const double err_rate =
+        (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
 
-    QLOG("[QSDC] Sample result: qi=" << qi
-         << " alice_op=" << alice_op
-         << " bob_op=" << bob_op
+    QLOG("[QSDC] Channel-test result: qi=" << qi
          << " decoded_bits=" << decoded_bits
          << " expected=00(phi+)"
          << " pass=" << (pass ? "YES" : "NO")
@@ -959,23 +910,23 @@ void QSDCApplication::handleMessage(cMessage* msg) {
          << " errors=" << errors
          << " error_rate=" << err_rate);
 
-      delete msg;
+    delete msg;
 
-      if (pending_checks.empty()) {
-        waiting_for_sample_block = false;
+    if (pending_checks.empty()) {
+      waiting_for_sample_block = false;
 
-        const double err_rate =
-            (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
+      const double err_rate =
+          (samples_done == 0) ? 0.0 : (double)errors / (double)samples_done;
 
-        QLOG("[QSDC] Sample block complete: block_size=" << current_sample_block_sent
-             << " cumulative_samples=" << samples_done
-             << " cumulative_errors=" << errors
-             << " cumulative_error_rate=" << err_rate);
+      QLOG("[QSDC] Channel-test block complete: block_size=" << current_sample_block_sent
+           << " cumulative_samples=" << samples_done
+           << " cumulative_errors=" << errors
+           << " cumulative_error_rate=" << err_rate);
 
-        scheduleAt(simTime() + sample_interval, new cMessage(SELF_NEXT_SAMPLE));
-      }
+      scheduleAt(simTime() + sample_interval, new cMessage(SELF_NEXT_SAMPLE));
+    }
 
-      return;
+    return;
   }
 
   // Any other QRSA messages
