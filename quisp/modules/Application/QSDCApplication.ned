@@ -14,6 +14,9 @@ simple QSDCApplication
 
     int bell_sample_target = default(16);
 
+    int sample_block_size = default(8);
+    int bell_block_size = default(8);
+
     double start_delay @unit(s) = default(0s);
     double poll_interval @unit(s) = default(0s);
     double sample_interval @unit(s) = default(0s);

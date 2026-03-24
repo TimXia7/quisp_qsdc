@@ -48,11 +48,22 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   int sample_target = 0;
   int samples_done = 0;
   int errors = 0;
+  int sample_block_size = 8;
 
   // Phase 2: Bell-pair correlation test
   int bell_sample_target = 0;
   int bell_samples_done = 0;
   int bell_errors = 0;
+  int bell_block_size = 8;
+
+  bool waiting_for_sample_block = false;
+  bool waiting_for_bell_block = false;
+
+  int current_sample_block_sent = 0;
+  int current_bell_block_sent = 0;
+
+  std::vector<int> current_sample_block_indices;
+  std::vector<int> current_bell_block_indices;
 
   bool expect_anti_correlation = false;
 
@@ -61,7 +72,7 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   omnetpp::simtime_t sample_interval = 0;
 
   struct PendingEntCheck {
-    char op;   // 'X' or 'Z'
+    bool awaiting = true;
   };
 
   struct PendingBellCheck {
@@ -81,10 +92,11 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
   void pollUntilEnoughPairs();
 
   int countReadyPairsAndCollect(std::vector<int>& out_indices);
+  void resetBlockState();
 
   // Phase 1
   void doNextSample();
-  void sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit, char op);
+  void sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit);
 
   // Phase 2
   void startBellCheckPhase();
