@@ -91,17 +91,17 @@ class QSDCApplication : public IApplication, public Logger::LoggerBase {
     void handleMessage(omnetpp::cMessage* msg) override;
 
     // Initialization:
-    void startOnce();
-    void startQSDCProtocol(unsigned long ruleset_id);
+    void protocolInit();
+    void entCheckStartup(unsigned long ruleset_id);
     void pollUntilEnoughPairs();
 
     // Phase 1: Entanglement verification
-    void startBellCheckPhase();
-    void doNextBellCheck();
-    void sendBellCheckRequest(int qi, char basis);
+    void startEntCheck();
+    void doNextEntCheck();
+    void sendEntCheckRequest(int qi, char basis);
 
     // Phase 2: Quantum channel verification
-    void doNextSample();
+    void doNextChannelCheck();
     void sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit);
 
     // Phase 3: Superdense coding transmission

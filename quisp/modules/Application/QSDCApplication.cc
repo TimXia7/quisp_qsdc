@@ -64,6 +64,8 @@ static const char* DENSE_DONE = "DENSE_DONE";
 // Functions:
 
 // OMNeT specifics
+// Sets up ned and ini params
+// sends the first omnet message, SELF_START_ONCE
 void QSDCApplication::initialize() {
   initializeLogger(provider);
 
@@ -115,8 +117,8 @@ void QSDCApplication::initialize() {
   }
 }
 
-// Initialization Step 1: Begin the startup process
-void QSDCApplication::startOnce() {
+// Initialization Step 1: Begin the startup process, and prepare for protocol
+void QSDCApplication::protocolInit() {
   const int bob_addr = par("bob_addr").intValue();
   const int n_pairs = par("number_of_bellpair").intValue();
 
@@ -143,7 +145,7 @@ void QSDCApplication::startOnce() {
 // Initialization Step 2: Begin the algorithm process
 // Once a delay is over, the polling starts to check if there are enough pairs to start QSDC
 // When there is, bell pair sampling starts for phase 1
-void QSDCApplication::startQSDCProtocol(unsigned long ruleset_id) {
+void QSDCApplication::entCheckStartup(unsigned long ruleset_id) {
   if (!is_initiator) return;
 
   if (protocol_started) {
@@ -190,7 +192,7 @@ void QSDCApplication::pollUntilEnoughPairs() {
   if (n_ready >= min_pairs_to_start) {
     if (!bell_check_started && bell_samples_done == 0) {
       QLOG("[QSDC] Enough Bell pairs available; starting Bell-pair correlation check first.");
-      startBellCheckPhase();
+      startEntCheck();
     } else if (bell_check_started) {
       scheduleAt(simTime(), new cMessage(SELF_NEXT_BELL_CHECK));
     } else {
@@ -203,7 +205,9 @@ void QSDCApplication::pollUntilEnoughPairs() {
 }
 
 // Phase 1:
-void QSDCApplication::startBellCheckPhase() {
+
+// clears required params, and initiates message SELF_NEXT_BELL_CHECK for phase 1
+void QSDCApplication::startEntCheck() {
   bell_check_started = true;
   bell_samples_done = 0;
   bell_errors = 0;
@@ -223,7 +227,8 @@ void QSDCApplication::startBellCheckPhase() {
   scheduleAt(simTime(), new cMessage(SELF_NEXT_BELL_CHECK));
 }
 
-void QSDCApplication::doNextBellCheck() {
+// main driver for first phase, repeatedly process bell pairs
+void QSDCApplication::doNextEntCheck() {
   if (!is_initiator) return;
 
   if (!bell_check_started) {
@@ -303,7 +308,7 @@ void QSDCApplication::doNextBellCheck() {
          << " basis=" << basis
          << " alice_bit=" << alice_bit);
 
-    sendBellCheckRequest(qi, basis);
+    sendEntCheckRequest(qi, basis);
   }
 
   if (current_bell_block_sent == 0) {
@@ -319,7 +324,8 @@ void QSDCApplication::doNextBellCheck() {
        << " target=" << bell_sample_target);
 }
 
-void QSDCApplication::sendBellCheckRequest(int qi, char basis) {
+// sends the classical message, enabled by BELLCHECK_REQ, for ent check
+void QSDCApplication::sendEntCheckRequest(int qi, char basis) {
   auto* req = new Header(BELL_REQ);
   req->setSrcAddr(my_address);
   req->setDestAddr(par("bob_addr").intValue());
@@ -337,7 +343,8 @@ void QSDCApplication::sendBellCheckRequest(int qi, char basis) {
 // Phase 2:
 
 // Step : Phase 2 driver
-void QSDCApplication::doNextSample() {
+// Checks if phase 2 is happening, if not forwards to phase 3
+void QSDCApplication::doNextChannelCheck() {
   if (!is_initiator) return;
 
   if (!sampling_started) {
@@ -422,6 +429,8 @@ void QSDCApplication::doNextSample() {
        << " target=" << sample_target);
 }
 
+// Phase 2 function responsible for Alice sending her half of the bell pair to Bob.
+// Also (admittedly, crudely) simulates Eve's interception
 void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit) {
   if (eve_enabled && dblrand() < eve_intercept_probability) {
     const char eve_basis = (dblrand() < 0.5) ? 'X' : 'Z';
@@ -454,6 +463,7 @@ void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* 
 
 // Phase 3:
 
+// convert the payload to bits with applyDenseEncoding, and send the photons through the channel
 void QSDCApplication::startDenseTransmission() {
   bob_decoded_symbols.clear();
   payload_indices.clear();
@@ -519,6 +529,15 @@ void QSDCApplication::startDenseTransmission() {
     sendDensePhoton(qi, qubit);
     QLOG("[QSDC] Dense send via quantum channel: qi=" << qi);
   }
+
+  auto* done = new Header(DENSE_DONE);
+  done->setSrcAddr(my_address);
+  done->setDestAddr(par("bob_addr").intValue());
+  done->setKind(1);
+
+  send(done, "toRouter");
+
+  QLOG("[QSDC] Dense transmission complete; sent DENSE_DONE to Bob.");
 }
 
 // Dense coding map for initial phi+:
@@ -541,6 +560,7 @@ void QSDCApplication::applyDenseEncoding(quisp::modules::StationaryQubit* qubit,
   }
 }
 
+// For phase 3, send the message through the channel
 void QSDCApplication::sendDensePhoton(int qi, quisp::modules::StationaryQubit* encoded_qubit) {
   auto* photon = new quisp::messages::PhotonicQubit("DENSE_PHOTON");
   photon->setMessage_type("dense_payload");
@@ -556,7 +576,7 @@ void QSDCApplication::sendDensePhoton(int qi, quisp::modules::StationaryQubit* e
   QLOG("[QSDC] Dense photon sent through quantum channel: qi=" << qi);
 }
 
-// (part of step 7) Bob decodes Alice's qubit
+// Bob decodes the message
 std::string QSDCApplication::decodeDensePair(quisp::modules::StationaryQubit* local_qubit, backends::IQubit* remote_qubit) {
   remote_qubit->gateCNOT(local_qubit->getBackendQubitRef());
   remote_qubit->gateH();
@@ -576,136 +596,13 @@ std::string QSDCApplication::decodeDensePair(quisp::modules::StationaryQubit* lo
 // Message handling logic for the app. Should be broken down in the final version
 // Handles the setup response, Bob handling ENT_REQ, Alice handling ENT_RESP elc.
 void QSDCApplication::handleMessage(cMessage* msg) {
-  // module deletion
   if (dynamic_cast<DeleteThisModule*>(msg)) {
     delete msg;
     deleteModule();
     return;
   }
 
-  if (auto* photon = dynamic_cast<quisp::messages::PhotonicQubit*>(msg)) {
-
-    if (strcmp(photon->getMessage_type(), SAMPLE_PHOTON) == 0) {
-      const int qi = (int)photon->par("qubit_index").longValue();
-      const int src_addr = (int)photon->par("src_addr").longValue();
-
-      if (photon->isLost()) {
-        QLOG("[QSDC] Channel-test photon lost in channel: qi=" << qi);
-
-        auto* respmsg = new Header(ENT_RESP);
-        respmsg->setSrcAddr(my_address);
-        respmsg->setDestAddr(src_addr);
-        respmsg->setKind(1);
-
-        respmsg->addPar("qubit_index") = qi;
-        respmsg->addPar("decoded_bits") = "LOST";
-
-        send(respmsg, "toRouter");
-        delete photon;
-        return;
-      }
-
-      auto* qnic = getLocalEntangledQnic();
-      if (!qnic) {
-        QLOG("[QSDC] SAMPLE_PHOTON: no local qnic on Bob");
-        delete photon;
-        return;
-      }
-
-      auto* bob_mod = qnic->getSubmodule("statQubit", qi);
-      if (!bob_mod) {
-        QLOG("[QSDC] SAMPLE_PHOTON: Bob statQubit[" << qi << "] missing");
-        delete photon;
-        return;
-      }
-
-      auto* bob_qubit = check_and_cast<quisp::modules::StationaryQubit*>(bob_mod);
-
-      auto* flying_qubit = const_cast<backends::IQubit*>(photon->getQubitRef());
-      if (!flying_qubit) {
-        QLOG("[QSDC] SAMPLE_PHOTON arrived with null qubit ref: qi=" << qi);
-        delete photon;
-        return;
-      }
-
-      // Bell decode: for an undisturbed phi+ pair, Bob should get "00"
-      std::string decoded_bits = decodeDensePair(bob_qubit, flying_qubit);
-
-      QLOG("[QSDC] Channel-test decode at Bob: qi=" << qi
-           << " decoded_bits=" << decoded_bits
-           << " expected=00(phi+)");
-
-      auto* respmsg = new Header(ENT_RESP);
-      respmsg->setSrcAddr(my_address);
-      respmsg->setDestAddr(src_addr);
-      respmsg->setKind(1);
-
-      respmsg->addPar("qubit_index") = qi;
-      respmsg->addPar("decoded_bits") = decoded_bits.c_str();
-
-      send(respmsg, "toRouter");
-      delete photon;
-      return;
-    }
-    if (strcmp(photon->getMessage_type(), "dense_payload") == 0) {
-      const int qi = (int) photon->par("qubit_index").longValue();
-      const int src_addr = (int) photon->par("src_addr").longValue();
-
-      if (photon->isLost()) {
-        QLOG("[QSDC] Dense photon lost in channel: qi=" << qi);
-
-        auto* done = new Header(DENSE_DONE);
-        done->setSrcAddr(my_address);
-        done->setDestAddr(src_addr);
-        done->setKind(1);
-        done->addPar("qubit_index") = qi;
-        done->addPar("decoded_bits") = "LOST";
-
-        send(done, "toRouter");
-        delete photon;
-        return;
-      }
-
-      auto* qnic = getLocalEntangledQnic();
-      if (!qnic) {
-        QLOG("[QSDC] Dense photon arrived, but no qnic found on Bob");
-        delete photon;
-        return;
-      }
-
-      auto* bob_mod = qnic->getSubmodule("statQubit", qi);
-      if (!bob_mod) {
-        QLOG("[QSDC] Dense photon arrived, but Bob statQubit[" << qi << "] missing");
-        delete photon;
-        return;
-      }
-
-      auto* bob_qubit = check_and_cast<quisp::modules::StationaryQubit*>(bob_mod);
-
-      auto* flying_qubit =
-          const_cast<backends::IQubit*>(photon->getQubitRef());
-
-      std::string decoded_bits = decodeDensePair(bob_qubit, flying_qubit);
-
-      QLOG("[QSDC] Dense photon decoded at Bob: qi=" << qi
-           << " bits=" << decoded_bits
-           << " xErr=" << photon->hasXError()
-           << " zErr=" << photon->hasZError());
-
-      auto* done = new Header(DENSE_DONE);
-      done->setSrcAddr(my_address);
-      done->setDestAddr(src_addr);
-      done->setKind(1);
-      done->addPar("qubit_index") = qi;
-      done->addPar("decoded_bits") = decoded_bits.c_str();
-
-      send(done, "toRouter");
-
-      delete photon;
-      return;
-    }
-  }
-
+  // Phase 1: Bob gets Alice's ent check req and measures his qubit in the requested basis, then responds
   if (strcmp(msg->getName(), BELL_REQ) == 0) {
     auto* hdr = check_and_cast<Header*>(msg);
     const int qi = (int)hdr->par("qubit_index").longValue();
@@ -747,6 +644,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     return;
   }
 
+  // Phase 1: Alice responds to Bob's ent check, and compares with Bob's result
   if (strcmp(msg->getName(), BELL_RESP) == 0) {
     const int qi = (int)msg->par("qubit_index").longValue();
     const std::string basis_str = msg->par("basis").stringValue();
@@ -815,76 +713,124 @@ void QSDCApplication::handleMessage(cMessage* msg) {
     return;
   }
 
-  // QRSA setup response (from step 3):
-  if (auto* resp = dynamic_cast<ConnectionSetupResponse*>(msg)) {
-    QLOG("[QSDC] ConnectionSetupResponse received (ruleset_id=" << resp->getRuleSet_id() << ")");
 
-    startQSDCProtocol(resp->getRuleSet_id());
-    delete resp;
-    return;
-  }
+  if (auto* photon = dynamic_cast<quisp::messages::PhotonicQubit*>(msg)) {
 
-  // Handle self messages
-  if (msg->isSelfMessage()) {
-    if (strcmp(msg->getName(), SELF_START_ONCE) == 0) {
-      delete msg;
-      startOnce();
-      return;
-    }
-    if (strcmp(msg->getName(), SELF_START_MESSAGE) == 0) {
-      delete msg;
-      startDenseTransmission();
-      return;
-    }
-    if (strcmp(msg->getName(), SELF_WAIT_FOR_PAIRS) == 0) {
-      delete msg;
-      pollUntilEnoughPairs();
-      return;
-    }
-    if (strcmp(msg->getName(), SELF_NEXT_SAMPLE) == 0) {
-      delete msg;
-      doNextSample();
-      return;
-    }
-    if (strcmp(msg->getName(), SELF_NEXT_BELL_CHECK) == 0) {
-      delete msg;
-      doNextBellCheck();
-      return;
-    }
-  }
+    // Phase 2: Bob gets Alice's photon and uses decodeDensePair to do a bell pair measurement
+    if (strcmp(photon->getMessage_type(), SAMPLE_PHOTON) == 0) {
+      const int qi = (int)photon->par("qubit_index").longValue();
+      const int src_addr = (int)photon->par("src_addr").longValue();
 
-  if (strcmp(msg->getName(), DENSE_DONE) == 0) {
-    const int qi = (int)msg->par("qubit_index").longValue();
-    const std::string bits = msg->par("decoded_bits").stringValue();
+      if (photon->isLost()) {
+        QLOG("[QSDC] Channel-test photon lost in channel: qi=" << qi);
 
-    if (bits == "LOST") {
-      QLOG("[QSDC] DENSE_DONE: qi=" << qi << " lost in channel");
-      bob_decoded_symbols.push_back("??");
-    } else {
-      bob_decoded_symbols.push_back(bits);
-    }
+        auto* respmsg = new Header(ENT_RESP);
+        respmsg->setSrcAddr(my_address);
+        respmsg->setDestAddr(src_addr);
+        respmsg->setKind(1);
 
-    QLOG("[QSDC] DENSE_DONE: qi=" << qi << " decoded_bits=" << bits);
+        respmsg->addPar("qubit_index") = qi;
+        respmsg->addPar("decoded_bits") = "LOST";
 
-    if (bob_decoded_symbols.size() == payload_bit_pairs.size()) {
-      std::string decoded_bits;
-      for (const auto& s : bob_decoded_symbols) decoded_bits += s;
-
-      std::string decoded_text;
-      for (size_t i = 0; i + 7 < decoded_bits.size(); i += 8) {
-        std::string byte = decoded_bits.substr(i, 8);
-        char ch = (char)std::stoi(byte, nullptr, 2);
-        decoded_text.push_back(ch);
+        send(respmsg, "toRouter");
+        delete photon;
+        return;
       }
 
-      QLOG("[QSDC] Dense decoded bits=" << decoded_bits);
-      QLOG("[QSDC] Dense decoded text=\"" << decoded_text << "\"");
+      auto* qnic = getLocalEntangledQnic();
+      if (!qnic) {
+        QLOG("[QSDC] SAMPLE_PHOTON: no local qnic on Bob");
+        delete photon;
+        return;
+      }
+
+      auto* bob_mod = qnic->getSubmodule("statQubit", qi);
+      if (!bob_mod) {
+        QLOG("[QSDC] SAMPLE_PHOTON: Bob statQubit[" << qi << "] missing");
+        delete photon;
+        return;
+      }
+
+      auto* bob_qubit = check_and_cast<quisp::modules::StationaryQubit*>(bob_mod);
+
+      auto* flying_qubit = const_cast<backends::IQubit*>(photon->getQubitRef());
+      if (!flying_qubit) {
+        QLOG("[QSDC] SAMPLE_PHOTON arrived with null qubit ref: qi=" << qi);
+        delete photon;
+        return;
+      }
+
+      // Bell decode: for an undisturbed phi+ pair, Bob should get "00"
+      std::string decoded_bits = decodeDensePair(bob_qubit, flying_qubit);
+
+      QLOG("[QSDC] Channel-test decode at Bob: qi=" << qi
+           << " decoded_bits=" << decoded_bits
+           << " expected=00(phi+)");
+
+      auto* respmsg = new Header(ENT_RESP);
+      respmsg->setSrcAddr(my_address);
+      respmsg->setDestAddr(src_addr);
+      respmsg->setKind(1);
+
+      respmsg->addPar("qubit_index") = qi;
+      respmsg->addPar("decoded_bits") = decoded_bits.c_str();
+
+      send(respmsg, "toRouter");
+      delete photon;
+      return;
     }
 
-    delete msg;
-    return;
+    // Phase 3: Bob receives a dense-coded payload
+    if (strcmp(photon->getMessage_type(), "dense_payload") == 0) {
+      const int qi = (int) photon->par("qubit_index").longValue();
+
+      if (photon->isLost()) {
+        QLOG("[QSDC] Dense photon lost in channel: qi=" << qi);
+        bob_decoded_symbols.push_back("??");
+        delete photon;
+        return;
+      }
+
+      auto* qnic = getLocalEntangledQnic();
+      if (!qnic) {
+        QLOG("[QSDC] Dense photon arrived, but no qnic found on Bob");
+        delete photon;
+        return;
+      }
+
+      auto* bob_mod = qnic->getSubmodule("statQubit", qi);
+      if (!bob_mod) {
+        QLOG("[QSDC] Dense photon arrived, but Bob statQubit[" << qi << "] missing");
+        delete photon;
+        return;
+      }
+
+      auto* bob_qubit = check_and_cast<quisp::modules::StationaryQubit*>(bob_mod);
+
+      auto* flying_qubit =
+          const_cast<backends::IQubit*>(photon->getQubitRef());
+
+      if (!flying_qubit) {
+        QLOG("[QSDC] Dense photon arrived with null qubit ref: qi=" << qi);
+        delete photon;
+        return;
+      }
+
+      std::string decoded_bits = decodeDensePair(bob_qubit, flying_qubit);
+
+      QLOG("[QSDC] Dense photon decoded at Bob: qi=" << qi
+           << " bits=" << decoded_bits
+           << " xErr=" << photon->hasXError()
+           << " zErr=" << photon->hasZError());
+
+      bob_decoded_symbols.push_back(decoded_bits);
+
+      delete photon;
+      return;
+    }
   }
 
+  // Phase 2: Alice gets Bob's measurement result for checking the quantum channel
   if (strcmp(msg->getName(), ENT_RESP) == 0) {
     const int qi = (int)msg->par("qubit_index").longValue();
 
@@ -994,6 +940,79 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       scheduleAt(simTime() + sample_interval, new cMessage(SELF_NEXT_SAMPLE));
     }
 
+    return;
+  }
+
+  // QRSA setup response (from step 3):
+  if (auto* resp = dynamic_cast<ConnectionSetupResponse*>(msg)) {
+    QLOG("[QSDC] ConnectionSetupResponse received (ruleset_id=" << resp->getRuleSet_id() << ")");
+
+    entCheckStartup(resp->getRuleSet_id());
+    delete resp;
+    return;
+  }
+
+  // Handle self messages
+  if (msg->isSelfMessage()) {
+    if (strcmp(msg->getName(), SELF_START_ONCE) == 0) {
+      delete msg;
+      protocolInit();
+      return;
+    }
+    if (strcmp(msg->getName(), SELF_START_MESSAGE) == 0) {
+      delete msg;
+      startDenseTransmission();
+      return;
+    }
+    if (strcmp(msg->getName(), SELF_WAIT_FOR_PAIRS) == 0) {
+      delete msg;
+      pollUntilEnoughPairs();
+      return;
+    }
+    if (strcmp(msg->getName(), SELF_NEXT_SAMPLE) == 0) {
+      delete msg;
+      doNextChannelCheck();
+      return;
+    }
+    if (strcmp(msg->getName(), SELF_NEXT_BELL_CHECK) == 0) {
+      delete msg;
+      doNextEntCheck();
+      return;
+    }
+  }
+
+  // Alice gets confirmation that Bob got the message from phase 3
+  if (strcmp(msg->getName(), DENSE_DONE) == 0) {
+    QLOG("[QSDC] Bob received DENSE_DONE from Alice; reconstructing dense payload.");
+
+    bool has_loss = false;
+    std::string decoded_bits;
+
+    for (const auto& s : bob_decoded_symbols) {
+      if (s == "??") {
+        has_loss = true;
+        break;
+      }
+      decoded_bits += s;
+    }
+
+    if (has_loss) {
+      QLOG("[QSDC] Dense payload reconstruction failed because one or more symbols were lost.");
+      delete msg;
+      return;
+    }
+
+    std::string decoded_text;
+    for (size_t i = 0; i + 7 < decoded_bits.size(); i += 8) {
+      std::string byte = decoded_bits.substr(i, 8);
+      char ch = (char)std::stoi(byte, nullptr, 2);
+      decoded_text.push_back(ch);
+    }
+
+    QLOG("[QSDC] Bob reconstructed dense decoded bits=" << decoded_bits);
+    QLOG("[QSDC] Bob reconstructed dense decoded text=\"" << decoded_text << "\"");
+
+    delete msg;
     return;
   }
 
