@@ -22,8 +22,8 @@ simple QSDCApplication
     double sample_interval @unit(s) = default(0s);
     int burn_count;
 
-    double max_error_rate = default(0.1);
-    double max_bell_error_rate = default(0.1);
+    double phase1_max_error_rate = default(0.1);
+	double phase2_max_error_rate = default(0.1);
 
     string payload = default("hello world");
 

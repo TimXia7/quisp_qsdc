@@ -246,7 +246,7 @@ void QSDCApplication::doNextEntCheck() {
 
     bell_check_started = false;
 
-    if (bell_err_rate <= par("max_bell_error_rate").doubleValue()) {
+    if (bell_err_rate <= par("phase1_max_error_rate").doubleValue()) {
       QLOG("[QSDC] Bell pairs accepted; starting direct channel verification.");
       sampling_started = true;
       waiting_for_sample_block = false;
@@ -358,7 +358,7 @@ void QSDCApplication::doNextChannelCheck() {
          << " errors=" << errors
          << " error_rate=" << err_rate);
 
-    if (err_rate <= par("max_error_rate").doubleValue()) {
+    if (err_rate <= par("phase2_max_error_rate").doubleValue()) {
       QLOG("[QSDC] Channel accepted; starting dense-coded message transmission.");
       scheduleAt(simTime() + sample_interval, new cMessage(SELF_START_MESSAGE));
     } else {
