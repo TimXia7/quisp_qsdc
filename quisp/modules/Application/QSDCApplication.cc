@@ -430,12 +430,13 @@ void QSDCApplication::doNextChannelCheck() {
 }
 
 // Phase 2 function responsible for Alice sending her half of the bell pair to Bob.
-// Also (admittedly, crudely) simulates Eve's interception
+// Simulates Eve with an intercept-resend attack.
 void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* qubit) {
   if (eve_enabled && dblrand() < eve_intercept_probability) {
     const char eve_basis = (dblrand() < 0.5) ? 'X' : 'Z';
     int eve_bit = 0;
 
+    // Step 1: Eve measures Alice's qubit
     if (eve_basis == 'X') {
       eve_bit = (eigenToInt(qubit->measureX()) == +1) ? 0 : 1;
     } else {
@@ -446,11 +447,27 @@ void QSDCApplication::sendSamplePhoton(int qi, quisp::modules::StationaryQubit* 
          << " eve_basis=" << eve_basis
          << " eve_bit=" << eve_bit
          << " prob=" << eve_intercept_probability);
+
+    // Step 2: reset qubit to a clean separable state
+    qubit->setFree(false);
+
+    // Step 3: resend a qubit prepared in Eve's measured state
+    if (eve_basis == 'Z') {
+      // |0> if eve_bit==0, |1> if eve_bit==1
+      if (eve_bit == 1) {
+        qubit->gateX();
+      }
+    } else {  // eve_basis == 'X'
+      // |+> if eve_bit==0, |-> if eve_bit==1
+      qubit->gateHadamard();
+      if (eve_bit == 1) {
+        qubit->gateZ();
+      }
+    }
   }
 
   auto* photon = new quisp::messages::PhotonicQubit("SAMPLE_PHOTON");
   photon->setMessage_type(SAMPLE_PHOTON);
-
   photon->setQubitRef(qubit->getBackendQubitRef());
 
   photon->addPar("src_addr") = my_address;
