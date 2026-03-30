@@ -577,12 +577,44 @@ void QSDCApplication::applyDenseEncoding(quisp::modules::StationaryQubit* qubit,
   }
 }
 
-// For phase 3, send the message through the channel
+// For phase 3, send the message through the channel.
+// If Eve is enabled, she also intercepts dense-coded photons.
 void QSDCApplication::sendDensePhoton(int qi, quisp::modules::StationaryQubit* encoded_qubit) {
+  if (eve_enabled && dblrand() < eve_intercept_probability) {
+    const char eve_basis = (dblrand() < 0.5) ? 'X' : 'Z';
+    int eve_bit = 0;
+
+    // Eve measures the flying dense-coded qubit
+    if (eve_basis == 'X') {
+      eve_bit = (eigenToInt(encoded_qubit->measureX()) == +1) ? 0 : 1;
+    } else {
+      eve_bit = (eigenToInt(encoded_qubit->measureZ()) == +1) ? 0 : 1;
+    }
+
+    // Log exactly what Eve managed to observe.
+    QLOG("[QSDC] EVE intercepted DENSE_PHOTON before send: qi=" << qi
+         << " eve_basis=" << eve_basis
+         << " eve_bit=" << eve_bit
+         << " prob=" << eve_intercept_probability
+         << " info_leaked=partial_single_qubit_measurement");
+    encoded_qubit->setFree(false);
+
+    // Resend a qubit prepared in Eve's measured state
+    if (eve_basis == 'Z') {
+      if (eve_bit == 1) {
+        encoded_qubit->gateX();
+      }
+    } else {
+      encoded_qubit->gateHadamard();
+      if (eve_bit == 1) {
+        encoded_qubit->gateZ();
+      }
+    }
+  }
+
   auto* photon = new quisp::messages::PhotonicQubit("DENSE_PHOTON");
   photon->setMessage_type("dense_payload");
 
-  // Carry the encoded qubit through the channel
   photon->setQubitRef(encoded_qubit->getBackendQubitRef());
 
   photon->addPar("src_addr") = my_address;
