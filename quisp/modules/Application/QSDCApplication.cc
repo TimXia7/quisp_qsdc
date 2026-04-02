@@ -52,7 +52,7 @@ static const char* BELL_REQ = "BELLCHECK_REQ";
 static const char* BELL_RESP = "BELLCHECK_RESP";
 
 // Phase 2
-static const char* ENT_RESP = "ENTCHECK_RESP";
+static const char* SAMPLE_PHOTON_RESP = "SAMPLE_PHOTON_RESP";
 static const char* SELF_NEXT_SAMPLE = "NEXT_SAMPLE";
 static const char* SAMPLE_PHOTON = "SAMPLE_PHOTON";
 
@@ -643,7 +643,7 @@ std::string QSDCApplication::decodeDensePair(quisp::modules::StationaryQubit* lo
 
 // OMNeT required: messaging handler
 // Message handling logic for the app. Should be broken down in the final version
-// Handles the setup response, Bob handling ENT_REQ, Alice handling ENT_RESP elc.
+// Handles the setup response, Bob handling ENT_REQ, Alice handling SAMPLE_PHOTON_RESP elc.
 void QSDCApplication::handleMessage(cMessage* msg) {
   if (dynamic_cast<DeleteThisModule*>(msg)) {
     delete msg;
@@ -773,7 +773,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
       if (photon->isLost()) {
         QLOG("[QSDC] Channel-test photon lost in channel: qi=" << qi);
 
-        auto* respmsg = new Header(ENT_RESP);
+        auto* respmsg = new Header(SAMPLE_PHOTON_RESP);
         respmsg->setSrcAddr(my_address);
         respmsg->setDestAddr(src_addr);
         respmsg->setKind(1);
@@ -816,7 +816,7 @@ void QSDCApplication::handleMessage(cMessage* msg) {
            << " decoded_bits=" << decoded_bits
            << " expected=00(phi+)");
 
-      auto* respmsg = new Header(ENT_RESP);
+      auto* respmsg = new Header(SAMPLE_PHOTON_RESP);
       respmsg->setSrcAddr(my_address);
       respmsg->setDestAddr(src_addr);
       respmsg->setKind(1);
@@ -880,12 +880,12 @@ void QSDCApplication::handleMessage(cMessage* msg) {
   }
 
   // Phase 2: Alice gets Bob's measurement result for checking the quantum channel
-  if (strcmp(msg->getName(), ENT_RESP) == 0) {
+  if (strcmp(msg->getName(), SAMPLE_PHOTON_RESP) == 0) {
     const int qi = (int)msg->par("qubit_index").longValue();
 
     auto it = pending_checks.find(qi);
     if (it == pending_checks.end()) {
-      QLOG("[QSDC] ENT_RESP: no pending check for qi=" << qi);
+      QLOG("[QSDC] SAMPLE_PHOTON_RESP: no pending check for qi=" << qi);
       delete msg;
       return;
     }
