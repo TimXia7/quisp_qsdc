@@ -1,3 +1,12 @@
+# QSDC Specific Notes:
+The work done for the Quantum Secure Direct Communication (QSDC) Simulation System is built on top of QUISP via. Git's fork mechanic. Below is the original README from the QUISP project. QSDC specific README notes are seen below in this section.
+
+* Setup Steps:
+The setup steps are identical for the QSDC simulation is identical to that of QUISP. Read below for the setup steps which comprise of downloading an instance of Windows Subsystem for Linux (WSL), downloading the OMNeT++ image from quisp, only instead of doing so from the original repository, you should download from this one if you want the QSDC content, and configuring the Makesettings.
+
+* Running the QSDC Demo:
+After you have properly set up the QUISP environment, run the following file as a siulation: \quisp\simulations\qsdc.ini
+
 # QUISP
 [![Codacy Badge](https://app.codacy.com/project/badge/Grade/83c96c45f2684211a8cef800b1d07f81)](https://www.codacy.com/gh/sfc-aqua/quisp/dashboard?utm_source=github.com&amp;utm_medium=referral&amp;utm_content=sfc-aqua/quisp&amp;utm_campaign=Badge_Grade)
 [![Coverage Status](https://coveralls.io/repos/github/sfc-aqua/quisp/badge.svg?branch=master)](https://coveralls.io/github/sfc-aqua/quisp?branch=master)
